@@ -20,6 +20,7 @@ Everything below runs **inside** this shell (`/repo`).
 
 ```bash
 git clone --depth 1 https://github.com/conan-io/ros-conan.git /opt/ros-conan
+python3 /repo/scripts/patch_ros_kilted_vcs.py /opt/ros-conan
 conan remote add ros-conan /opt/ros-conan --type=local-recipes-index --force
 conan install --requires=ros-kilted/2026.06.17 -pr:b=default -pr:h=profiles/rpi3-armv8 --build=missing
 ```
@@ -99,6 +100,7 @@ Python 3.12, Conan 2.31+, Linux:
 
 ```bash
 git clone https://github.com/conan-io/ros-conan.git
+python3 scripts/patch_ros_kilted_vcs.py ros-conan
 conan remote add ros-conan ./ros-conan --type=local-recipes-index
 conan profile detect --force
 conan workspace source
@@ -111,6 +113,9 @@ CI runs these same commands (cross skips the copy to the Pi).
 
 ## Notes
 
+- CI clones [`ros-conan`](https://github.com/conan-io/ros-conan) and patches `ros-kilted` so
+  `vcs import` uses `--retry 5 --workers 5` (GitHub rate-limits otherwise). See
+  [`scripts/patch_ros_kilted_vcs.py`](scripts/patch_ros_kilted_vcs.py).
 - Do not put a `.conanrc` in the repo root: the container would miss the `gopigo-conan` volume.
 - HTTPS errors building the image: add the proxy CA as gitignored `docker/extra-ca.crt`.
 - Keep [`profiles/rpi3-armv8`](profiles/rpi3-armv8); `conan profile detect` will rebuild ROS for ARM.
