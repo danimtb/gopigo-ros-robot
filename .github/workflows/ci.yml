@@ -8,14 +8,6 @@ on:
 permissions:
   contents: read
 
-# vcstool clones the ~300 ROS repositories with `--retry 5`, which only helps when git exits
-# with an error. A stalled transfer or a credential prompt never does, so the worker hangs
-# until the job times out. These make git give up instead.
-env:
-  GIT_TERMINAL_PROMPT: "0"
-  GIT_HTTP_LOW_SPEED_LIMIT: "1000"
-  GIT_HTTP_LOW_SPEED_TIME: "60"
-
 jobs:
   workspace:
     name: Native workspace build
@@ -71,9 +63,6 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/gopigo-conan"
           docker run --rm \
-            -e GIT_TERMINAL_PROMPT \
-            -e GIT_HTTP_LOW_SPEED_LIMIT \
-            -e GIT_HTTP_LOW_SPEED_TIME \
             -v "$PWD:/repo" \
             -v "$RUNNER_TEMP/gopigo-conan:/opt/conan2" \
             gopigo-builder \

@@ -114,9 +114,6 @@ CI runs these same commands (cross skips the copy to the Pi).
 - `ros-conan` is cloned from the `danimtb/fix-vcs` branch: its `vcs import` passes
   `--retry 5 --workers 5`, without which the ROS source clones fail. Back to `main` once
   that branch is merged.
-- CI also exports `GIT_TERMINAL_PROMPT=0` and the `GIT_HTTP_LOW_SPEED_*` pair. A retry only
-  happens when git returns an error, and a stalled clone or a credential prompt returns
-  nothing at all.
 - Do not put a `.conanrc` in the repo root: the container would miss the `gopigo-conan` volume.
 - HTTPS errors building the image: add the proxy CA as gitignored `docker/extra-ca.crt`.
 - Keep [`profiles/rpi3-armv8`](profiles/rpi3-armv8); `conan profile detect` will rebuild ROS for ARM.
