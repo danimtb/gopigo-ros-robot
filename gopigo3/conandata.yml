@@ -1,0 +1,4 @@
+sources:
+  "1.0.3":
+    url: "https://github.com/DexterInd/GoPiGo3/archive/refs/tags/trixie_v1.0.3.tar.gz"
+    sha256: "55d6a5c50c8b022803ed412588a5f4a78a255abc4d309ac199915f022f357d0e"

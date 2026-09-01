@@ -1,0 +1,38 @@
+# Host profile for cross-building to a Raspberry Pi 3 Model B (BCM2837, Cortex-A53) running
+# 64-bit Raspberry Pi OS. Used from the build container in ../readme.md, which provides the
+# toolchain and the arm64 packages this profile points at:
+#
+#   conan workspace build -pr:b=profiles/ros -pr:h=profiles/rpi3-armv8 --build=missing
+
+[settings]
+os=Linux
+arch=armv8
+compiler=gcc
+compiler.version=13
+compiler.cppstd=17
+compiler.libcxx=libstdc++11
+build_type=Release
+
+[options]
+ros-kilted/*:python_version=3.12
+
+[buildenv]
+CC=aarch64-linux-gnu-gcc-13
+CXX=aarch64-linux-gnu-g++-13
+AR=aarch64-linux-gnu-ar
+RANLIB=aarch64-linux-gnu-ranlib
+STRIP=aarch64-linux-gnu-strip
+
+[conf]
+# Conan infers CMAKE_SYSTEM_NAME from the host/build settings mismatch; the processor is
+# spelled out because CMake cannot derive it from Conan's 'armv8'.
+tools.cmake.cmaketoolchain:system_processor=aarch64
+tools.build:cflags=["-mcpu=cortex-a53"]
+tools.build:cxxflags=["-mcpu=cortex-a53"]
+
+# Read only when cross-building ros-kilted itself: rosidl_generator_py builds an extension
+# module for the target, so it needs the arm64 Python the image installs via multiarch (see
+# ../docker/Dockerfile). CMake cannot introspect an interpreter it cannot execute, hence the
+# split between a native executable, which is all the generator scripts ever ask for, and
+# target headers, library and SOABI.
+tools.cmake.cmaketoolchain:extra_variables={"Python3_EXECUTABLE": "/usr/bin/python3", "Python3_INCLUDE_DIR": "/usr/include/python3.12", "Python3_LIBRARY": "/usr/lib/aarch64-linux-gnu/libpython3.12.so", "Python3_NumPy_INCLUDE_DIR": "/usr/lib/python3/dist-packages/numpy/core/include", "PYTHON_SOABI": "cpython-312-aarch64-linux-gnu"}

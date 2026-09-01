@@ -1,0 +1,6 @@
+name: gopigo_robot
+packages:
+  - path: gopigo3
+    ref: gopigo3/1.0.3
+  - path: gopigo3-ros
+    ref: gopigo3_ros/1.0.0

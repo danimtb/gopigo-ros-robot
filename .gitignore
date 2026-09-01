@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+ros-conan/
+docker/extra-ca.crt
+
+
+CMakeUserPresets.json
+**/build/
+**/deploy/
+gopigo3/src/
+
+.idea/
+.vs/
+.vscode/
+.DS_Store
+Thumbs.db

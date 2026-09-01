@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    name: Native workspace build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Conan
+        uses: conan-io/setup-conan@v1
+        with:
+          cache_packages: true
+
+      - name: Point Conan at ros-kilted
+        run: |
+          git clone https://github.com/conan-io/ros-conan.git
+          conan remote add ros-conan ./ros-conan --type=local-recipes-index
+          conan profile detect --force
+
+      - name: Native workspace build
+        run: |
+          conan workspace source
+          conan workspace build --profile profiles/ros --build=missing
+
+  cross:
+    name: Cross-build to the Raspberry Pi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache the gopigo-conan volume
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/gopigo-conan
+          key: gopigo-conan-${{ hashFiles('gopigo3/conanfile.py', 'gopigo3-ros/conanfile.py', 'profiles/**') }}
+          restore-keys: |
+            gopigo-conan-
+
+      - name: Start the build container
+        run: docker build -t gopigo-builder docker
+
+      - name: Point Conan at ros-kilted and cross-build the node
+        run: |
+          mkdir -p "$RUNNER_TEMP/gopigo-conan"
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -v "$RUNNER_TEMP/gopigo-conan:/opt/conan2" \
+            gopigo-builder \
+            bash -euo pipefail -c '
+              conan profile detect --force
+
+              git clone --depth 1 https://github.com/conan-io/ros-conan.git /opt/ros-conan
+              conan remote add ros-conan /opt/ros-conan --type=local-recipes-index --force
+
+              conan install --requires=ros-kilted/2026.06.17 -pr:b=default -pr:h=profiles/rpi3-armv8 --build=missing
+
+              conan create gopigo3 -pr:b=profiles/ros -pr:h=profiles/rpi3-armv8 --build=missing
+
+              cd /tmp
+              conan install /repo/gopigo3-ros -pr:b=/repo/profiles/ros -pr:h=/repo/profiles/rpi3-armv8 \
+                  --build=never --deployer=full_deploy --deployer-folder=/repo/gopigo3-ros/deploy
+
+              cd /repo/gopigo3-ros
+              cmake --preset conan-release
+              cmake --build --preset conan-release
+            '
