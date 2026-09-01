@@ -42,7 +42,7 @@ jobs:
 
       - name: Point Conan at ros-kilted
         run: |
-          git clone --branch danimtb/fix-vcs https://github.com/conan-io/ros-conan.git
+          git clone https://github.com/conan-io/ros-conan.git
           conan remote add ros-conan ./ros-conan --type=local-recipes-index
           conan profile detect --force
 
