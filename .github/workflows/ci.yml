@@ -30,8 +30,7 @@ jobs:
 
       - name: Point Conan at ros-kilted
         run: |
-          git clone https://github.com/conan-io/ros-conan.git
-          python3 scripts/patch_ros_kilted_vcs.py ros-conan
+          git clone --branch danimtb/fix-vcs https://github.com/conan-io/ros-conan.git
           conan remote add ros-conan ./ros-conan --type=local-recipes-index
           conan profile detect --force
 
@@ -70,8 +69,8 @@ jobs:
             bash -euo pipefail -c '
               conan profile detect --force
 
-              git clone --depth 1 https://github.com/conan-io/ros-conan.git /opt/ros-conan
-              python3 /repo/scripts/patch_ros_kilted_vcs.py /opt/ros-conan
+              git clone --depth 1 --branch danimtb/fix-vcs \
+                  https://github.com/conan-io/ros-conan.git /opt/ros-conan
               conan remote add ros-conan /opt/ros-conan --type=local-recipes-index --force
 
               conan install --requires=ros-kilted/2026.06.17 -pr:b=default -pr:h=profiles/rpi3-armv8 --build=missing
