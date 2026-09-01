@@ -19,7 +19,7 @@ Everything below runs **inside** this shell (`/repo`).
 ## 2. ROS for arm64
 
 ```bash
-git clone --depth 1 --branch danimtb/fix-vcs https://github.com/conan-io/ros-conan.git /opt/ros-conan
+git clone --depth 1 https://github.com/conan-io/ros-conan.git /opt/ros-conan
 conan remote add ros-conan /opt/ros-conan --type=local-recipes-index --force
 conan install --requires=ros-kilted/2026.06.17 -pr:b=default -pr:h=profiles/rpi3-armv8 --build=missing
 ```
