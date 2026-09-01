@@ -96,9 +96,6 @@ jobs:
 
               conan install --requires=ros-kilted/2026.06.17 -pr:b=default -pr:h=profiles/rpi3-armv8 --build=missing
 
-              # The ROS source and build trees dwarf everything else and nothing below reads
-              # them again. Downloads stay: the cached volume reuses them next run.
-              conan cache clean "*" --source --build --temp
 
               cd /tmp
               conan create /repo/gopigo3 -pr:b=/repo/profiles/ros -pr:h=/repo/profiles/rpi3-armv8 \
