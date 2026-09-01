@@ -114,6 +114,9 @@ CI runs these same commands (cross skips the copy to the Pi).
 - `ros-conan` is cloned from the `danimtb/fix-vcs` branch: its `vcs import` passes
   `--retry 5 --workers 5`, without which the ROS source clones fail. Back to `main` once
   that branch is merged.
+- Building ROS from source needs tens of GB. GitHub runners guarantee only 14 GB, so CI
+  deletes their preinstalled toolchains first and drops the ROS source and build trees once
+  the package is in the cache.
 - Do not put a `.conanrc` in the repo root: the container would miss the `gopigo-conan` volume.
 - HTTPS errors building the image: add the proxy CA as gitignored `docker/extra-ca.crt`.
 - Keep [`profiles/rpi3-armv8`](profiles/rpi3-armv8); `conan profile detect` will rebuild ROS for ARM.
