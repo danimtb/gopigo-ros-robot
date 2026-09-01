@@ -101,9 +101,10 @@ jobs:
               # them again. Downloads stay: the cached volume reuses them next run.
               conan cache clean "*" --source --build --temp
 
-              conan create gopigo3 -pr:b=profiles/ros -pr:h=profiles/rpi3-armv8 --build=missing
-
               cd /tmp
+              conan create /repo/gopigo3 -pr:b=/repo/profiles/ros -pr:h=/repo/profiles/rpi3-armv8 \
+                  --build=missing
+
               conan install /repo/gopigo3-ros -pr:b=/repo/profiles/ros -pr:h=/repo/profiles/rpi3-armv8 \
                   --build=never --deployer=full_deploy --deployer-folder=/repo/gopigo3-ros/deploy
 
