@@ -99,7 +99,7 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args -p scale_linear:=0.2 
 Python 3.12, Conan 2.31+, Linux:
 
 ```bash
-git clone --branch danimtb/fix-vcs https://github.com/conan-io/ros-conan.git
+git clone https://github.com/conan-io/ros-conan.git
 conan remote add ros-conan ./ros-conan --type=local-recipes-index
 conan profile detect --force
 conan workspace source
