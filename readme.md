@@ -27,9 +27,9 @@ conan install --requires=ros-kilted/2026.06.17 -pr:b=default -pr:h=profiles/rpi3
 ## 3. Node + libraries
 
 ```bash
-conan create gopigo3 -pr:b=profiles/ros -pr:h=profiles/rpi3-armv8 --build=missing
-
 cd /tmp
+conan create /repo/gopigo3 -pr:b=/repo/profiles/ros -pr:h=/repo/profiles/rpi3-armv8 --build=missing
+
 conan install /repo/gopigo3-ros -pr:b=/repo/profiles/ros -pr:h=/repo/profiles/rpi3-armv8 \
     --build=never --deployer=full_deploy --deployer-folder=/repo/gopigo3-ros/deploy
 
@@ -38,7 +38,8 @@ cmake --preset conan-release
 cmake --build --preset conan-release
 ```
 
-`conan install` is run from `/tmp` so Conan does not treat `gopigo3` as a workspace editable.
+Both run from `/tmp` so Conan does not treat `gopigo3` as a workspace editable: from `/repo`
+`conan create` builds nothing and its `test_package` fails on the missing library.
 `--build=never` fails instead of compiling ROS for ARM again.
 
 ## 4. Copy to the Pi

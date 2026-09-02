@@ -15,6 +15,18 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      # Hosted runners only guarantee 14 GB free, and building ROS from source needs far
+      # more: every job so far died with "No space left on device".
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: true
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -45,6 +57,16 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: true
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -74,9 +96,11 @@ jobs:
 
               conan install --requires=ros-kilted/2026.06.17 -pr:b=default -pr:h=profiles/rpi3-armv8 --build=missing
 
-              conan create gopigo3 -pr:b=profiles/ros -pr:h=profiles/rpi3-armv8 --build=missing
 
               cd /tmp
+              conan create /repo/gopigo3 -pr:b=/repo/profiles/ros -pr:h=/repo/profiles/rpi3-armv8 \
+                  --build=missing
+
               conan install /repo/gopigo3-ros -pr:b=/repo/profiles/ros -pr:h=/repo/profiles/rpi3-armv8 \
                   --build=never --deployer=full_deploy --deployer-folder=/repo/gopigo3-ros/deploy
 
