@@ -3,6 +3,7 @@ project(gopigo3_ros CXX)
 
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(gopigo3_cpp REQUIRED)
 
 add_executable(gopigo3_ros_node
@@ -12,6 +13,7 @@ add_executable(gopigo3_ros_node
 
 target_link_libraries(gopigo3_ros_node PRIVATE rclcpp::rclcpp
                                                ${geometry_msgs_TARGETS}
+                                               ${std_msgs_TARGETS}
                                                gopigo3)
 
 include(GNUInstallDirs)

@@ -89,10 +89,29 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args -p scale_linear:=0.2 
 | `max_angular_speed` | `2.0` rad/s |
 | `max_motor_dps` | `500` |
 | `cmd_timeout` | `0.5` s without a command, then stop |
+| `line_follower_port` | `I2C` (`AD1`, `AD2`, or `off`) |
+| `line_follower_topic` | `/line_follower` |
+| `line_follow` | `false` (set `true` to drive from the sensor) |
+| `line_follow_speed` | `0.12` m/s |
+| `line_follow_kp` | `1.8` |
+
+The Dexter line follower (black board, 6 IR; red board, 5 IR) is read over I2C at `0x06`.
+Values are `0` (black) … `1` (white), left → right with the board arrow forward.
 
 ```bash
 ./build/Release/gopigo3_ros_node --ros-args -p max_linear_speed:=0.15
+./build/Release/gopigo3_ros_node --ros-args -p line_follow:=true -p line_follow_speed:=0.10
 ```
+
+On the laptop, same `ROS_DOMAIN_ID`:
+
+```bash
+conan run "ros2 topic echo /line_follower"
+conan run "ros2 topic echo /line_follower/state"
+```
+
+Enable I2C in `raspi-config` if the sensor is on the I2C Grove. Use `-p line_follower_port:=AD1` when it is plugged into Grove AD1 (black board).
+
 
 ## Desktop compile (no robot)
 
