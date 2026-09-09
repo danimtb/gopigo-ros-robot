@@ -93,15 +93,16 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args \
 | --- | --- |
 | `cmd_vel_topic` | `cmd_vel` |
 | `max_linear_speed` | `0.3` m/s |
-| `max_angular_speed` | `2.0` rad/s |
-| `max_motor_dps` | `500` |
+| `max_angular_speed` | `4.0` rad/s |
+| `max_motor_dps` | `700` |
 | `cmd_timeout` | `0.5` s without a command, then stop |
 | `line_follower_port` | `I2C` (`AD1`, `AD2`, or `off`) |
 | `line_follower_topic` | `line_follower` |
 | `line_follow` | `false` (set `true` to drive from the sensor) |
-| `line_follow_speed` | `0.12` m/s |
-| `line_follow_kp` | `2.6` |
+| `line_follow_speed` | `0.10` m/s |
+| `line_follow_kp` | `8.0` |
 | `line_follow_kd` | `0.08` |
+| `line_follow_slowdown` | `0.35` of the speed dropped in a full turn |
 | `line_threshold` | `0.6` (below it a sensor is on the line) |
 | `line_search_timeout` | `1.5` s turning to find a lost line, then stop |
 | `color_sensor_port` | `I2C` (`AD1`, `AD2`, or `off`) |
@@ -111,6 +112,24 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args \
 
 Do not put a leading `/` on those topic parameters: that would make them global and both robots
 would share the same names.
+
+`line_follow` and every number above can be set while the node drives, so switching between
+following and waiting for teleop is a parameter set from the laptop (the node is
+`gopigo3_ros` inside the namespace):
+
+```bash
+conan run "ros2 param set /gopigo_a/gopigo3_ros line_follow true"
+conan run "ros2 param set /gopigo_a/gopigo3_ros line_follow false"
+conan run "ros2 param set /gopigo_a/gopigo3_ros line_follow_kp 6.0"
+conan run "ros2 param get /gopigo_a/gopigo3_ros line_follow"
+```
+
+Switching it off stops the wheels and leaves the robot waiting for `cmd_vel`; switching it on
+starts following `cmd_timeout` after the last teleop command, which is also how a teleop key
+takes the robot over mid-line without touching the parameter. Write the decimal point on the
+numbers (`700.0`, not `700`) or the value goes out as an integer and is refused. Topics, ports
+and `color_led` are wired up at start-up, so setting those is refused too, rather than
+accepted and ignored.
 
 The Dexter line follower (black board, 6 IR; red board, 5 IR) is read over I2C at `0x06`.
 Values are `0` (black) … `1` (white), left → right with the board arrow forward. On the Grove
@@ -125,6 +144,12 @@ and carry no weight, so a line under one end of the board gives the full error i
 average watered down by the five sensors looking at the floor. Read
 `line_follower` on a plain floor and put the threshold below those values. When the board sees
 only white, the last turn is held for `line_search_timeout` to bring the line back in view.
+
+The wheels get `v ± ω · 0.0585`, so on a 66.5 mm wheel each rad/s of `ω` adds ~100 dps to one
+wheel and takes it off the other. Turning comes out of `line_follow_kp`, not out of braking:
+with a big `line_follow_slowdown` the outer wheel ends up no faster than when going straight
+and the robot pivots on the inner wheel instead of driving the curve. The node warns when the
+turn it asks for is being capped by `max_angular_speed`.
 
 The Dexter Light & Color Sensor (TCS34725 at `0x29`) can share the same Grove I2C bus as the
 line follower. `color` is `std_msgs/ColorRGBA` (`r,g,b` plus `a` = clear/intensity, 0…1).
@@ -146,7 +171,7 @@ brightness are 0…1. Names below are under the robot namespace (example: `/gopi
 
 ```bash
 ./build/Release/gopigo3_ros_node --ros-args -r __ns:=/gopigo_a -p max_linear_speed:=0.15
-./build/Release/gopigo3_ros_node --ros-args -r __ns:=/gopigo_a -p line_follow:=true -p line_follow_speed:=0.10
+./build/Release/gopigo3_ros_node --ros-args -r __ns:=/gopigo_a -p line_follow:=true
 ```
 
 On the laptop, same `ROS_DOMAIN_ID`:

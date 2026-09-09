@@ -2,8 +2,10 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <geometry_msgs/msg/twist.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
 #include <std_msgs/msg/float32.hpp>
@@ -36,6 +38,9 @@ private:
   void on_blinker_left(const std_msgs::msg::Float32 & msg);
   void on_blinker_right(const std_msgs::msg::Float32 & msg);
   void on_blinkers(const std_msgs::msg::Float32 & msg);
+  // Lets `ros2 param set` switch line follow on and off, and retune it, while it drives.
+  rcl_interfaces::msg::SetParametersResult on_set_parameters(
+    const std::vector<rclcpp::Parameter> & params);
 
   GoPiGo3Driver driver_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
@@ -53,6 +58,7 @@ private:
   rclcpp::TimerBase::SharedPtr line_timer_;
   rclcpp::TimerBase::SharedPtr color_timer_;
   rclcpp::TimerBase::SharedPtr watchdog_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_;
 
   rclcpp::Time last_cmd_time_;
   rclcpp::Time last_teleop_time_;
@@ -70,6 +76,7 @@ private:
   double line_follow_speed_;
   double line_follow_kp_;
   double line_follow_kd_;
+  double line_follow_slowdown_;
   double line_threshold_;
   rclcpp::Duration cmd_timeout_{0, 0};
   rclcpp::Duration line_search_timeout_{0, 0};

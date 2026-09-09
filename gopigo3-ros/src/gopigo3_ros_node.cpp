@@ -16,17 +16,18 @@ GoPiGo3RosNode::GoPiGo3RosNode()
   const auto topic = relative_topic(
     declare_parameter<std::string>("cmd_vel_topic", "cmd_vel"), "cmd_vel_topic");
   max_linear_speed_ = declare_parameter<double>("max_linear_speed", 0.3);
-  max_angular_speed_ = declare_parameter<double>("max_angular_speed", 2.0);
-  max_motor_dps_ = declare_parameter<double>("max_motor_dps", 500.0);
+  max_angular_speed_ = declare_parameter<double>("max_angular_speed", 4.0);
+  max_motor_dps_ = declare_parameter<double>("max_motor_dps", 700.0);
   cmd_timeout_ = rclcpp::Duration::from_seconds(declare_parameter<double>("cmd_timeout", 0.5));
 
   const auto lf_port_name = declare_parameter<std::string>("line_follower_port", "I2C");
   const auto lf_topic = relative_topic(
     declare_parameter<std::string>("line_follower_topic", "line_follower"), "line_follower_topic");
   line_follow_ = declare_parameter<bool>("line_follow", false);
-  line_follow_speed_ = declare_parameter<double>("line_follow_speed", 0.12);
-  line_follow_kp_ = declare_parameter<double>("line_follow_kp", 2.6);
+  line_follow_speed_ = declare_parameter<double>("line_follow_speed", 0.10);
+  line_follow_kp_ = declare_parameter<double>("line_follow_kp", 8.0);
   line_follow_kd_ = declare_parameter<double>("line_follow_kd", 0.08);
+  line_follow_slowdown_ = declare_parameter<double>("line_follow_slowdown", 0.35);
   line_threshold_ = declare_parameter<double>("line_threshold", 0.6);
   line_search_timeout_ =
     rclcpp::Duration::from_seconds(declare_parameter<double>("line_search_timeout", 1.5));
@@ -114,6 +115,11 @@ GoPiGo3RosNode::GoPiGo3RosNode()
   line_timer_ = create_wall_timer(20ms, [this]() { publish_line_follower(); });
   color_timer_ = create_wall_timer(100ms, [this]() { publish_color(); });
   watchdog_ = create_wall_timer(50ms, [this]() { on_timer(); });
+
+  param_callback_ = add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter> & params) {
+      return on_set_parameters(params);
+    });
 
   if (std::string(get_namespace()) == "/") {
     RCLCPP_WARN(
@@ -249,8 +255,20 @@ void GoPiGo3RosNode::follow_line(const LineFollowerReading & reading)
   last_line_time_ = stamp;
   last_line_error_ = error;
 
-  cmd.linear.x = line_follow_speed_ * (1.0 - std::min(std::abs(error) * 1.6, 0.7));
+  // Only a mild slowdown in the curve: cutting the forward speed hard makes the outer wheel
+  // no faster than when driving straight, so the robot ends up pivoting on a braked inner
+  // wheel instead of driving around the curve.
+  const double turn = std::min(std::abs(error) / 0.5, 1.0);
+  cmd.linear.x = line_follow_speed_ * (1.0 - line_follow_slowdown_ * turn);
   cmd.angular.z = -line_follow_kp_ * error - line_follow_kd_ * derivative;
+
+  if (std::abs(cmd.angular.z) > max_angular_speed_) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "Line follow asks for %.2f rad/s, capped by max_angular_speed %.2f", cmd.angular.z,
+      max_angular_speed_);
+  }
+
   last_cmd_time_ = stamp;
   drive(cmd);
 }
@@ -318,6 +336,91 @@ void GoPiGo3RosNode::on_blinker_right(const std_msgs::msg::Float32 & msg)
 void GoPiGo3RosNode::on_blinkers(const std_msgs::msg::Float32 & msg)
 {
   driver_.set_blinkers(msg.data);
+}
+
+rcl_interfaces::msg::SetParametersResult GoPiGo3RosNode::on_set_parameters(
+  const std::vector<rclcpp::Parameter> & params)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  // Reject the whole set before touching anything, so a bad value never lands half applied.
+  for (const auto & param : params) {
+    const auto & name = param.get_name();
+    if (name == "line_follow") {
+      if (param.as_bool() && !line_follower_ready_) {
+        result.successful = false;
+        result.reason = "no line follower answered at start-up";
+      }
+    } else if (name == "line_follow_slowdown") {
+      if (param.as_double() < 0.0 || param.as_double() > 1.0) {
+        result.successful = false;
+        result.reason = "line_follow_slowdown is a fraction of the speed, keep it within 0 and 1";
+      }
+    } else if (name == "line_threshold") {
+      if (param.as_double() <= 0.0 || param.as_double() > 1.0) {
+        result.successful = false;
+        result.reason = "line_threshold is a sensor reading, keep it within 0 and 1";
+      }
+    } else if (
+      name == "line_follow_speed" || name == "line_follow_kp" || name == "line_follow_kd" ||
+      name == "max_linear_speed" || name == "max_angular_speed" || name == "max_motor_dps" ||
+      name == "cmd_timeout" || name == "line_search_timeout") {
+      if (param.as_double() < 0.0) {
+        result.successful = false;
+        result.reason = name + " cannot be negative";
+      }
+    } else if (
+      name == "cmd_vel_topic" || name == "line_follower_topic" || name == "color_sensor_topic" ||
+      name == "led_topic_prefix" || name == "line_follower_port" ||
+      name == "color_sensor_port" || name == "color_led") {
+      // Topics, ports and the colour LED are wired up once, so accepting a new value here
+      // would leave the parameter and the running node disagreeing.
+      result.successful = false;
+      result.reason = name + " only takes effect when the node starts";
+    }
+
+    if (!result.successful) {
+      return result;
+    }
+  }
+
+  for (const auto & param : params) {
+    const auto & name = param.get_name();
+    if (name == "line_follow") {
+      line_follow_ = param.as_bool();
+      last_line_error_ = 0.0;
+      last_line_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+      line_lost_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+      if (!line_follow_) {
+        stop();  // hand the wheels back to teleop standing still, not on the last command
+      }
+      RCLCPP_INFO(
+        get_logger(), "Line follow %s", line_follow_ ? "on" : "off, waiting for teleop");
+    } else if (name == "line_follow_speed") {
+      line_follow_speed_ = param.as_double();
+    } else if (name == "line_follow_kp") {
+      line_follow_kp_ = param.as_double();
+    } else if (name == "line_follow_kd") {
+      line_follow_kd_ = param.as_double();
+    } else if (name == "line_follow_slowdown") {
+      line_follow_slowdown_ = param.as_double();
+    } else if (name == "line_threshold") {
+      line_threshold_ = param.as_double();
+    } else if (name == "max_linear_speed") {
+      max_linear_speed_ = param.as_double();
+    } else if (name == "max_angular_speed") {
+      max_angular_speed_ = param.as_double();
+    } else if (name == "max_motor_dps") {
+      max_motor_dps_ = param.as_double();
+    } else if (name == "cmd_timeout") {
+      cmd_timeout_ = rclcpp::Duration::from_seconds(param.as_double());
+    } else if (name == "line_search_timeout") {
+      line_search_timeout_ = rclcpp::Duration::from_seconds(param.as_double());
+    }
+  }
+
+  return result;
 }
 
 GroveI2cPort GoPiGo3RosNode::parse_grove_i2c_port(const std::string & name, const char * param) const
