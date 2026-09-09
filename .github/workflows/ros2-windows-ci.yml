@@ -1,0 +1,160 @@
+name: ROS 2 Windows CI (Conan)
+
+# Windows equivalent of the usual Linux ROS 2 job: build a colcon workspace and actually run
+# its tests, with ROS itself coming from Conan (ros-conan) instead of pixi, apt or chocolatey.
+# See examples/colcon_windows_ci/readme.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "examples/colcon_windows_ci/**"
+      - ".github/workflows/ros2-windows-ci.yml"
+  pull_request:
+    paths:
+      - "examples/colcon_windows_ci/**"
+      - ".github/workflows/ros2-windows-ci.yml"
+  # GitHub evicts caches untouched for 7 days, and rebuilding ROS from source costs hours.
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The ROS build nests paths deeply enough to hit MAX_PATH from a normal user profile.
+  CONAN_HOME: C:/.c2
+  ROS_CONAN_BRANCH: main
+  ROS_KILTED_VERSION: "2026.06.17"
+  ROS_KILTED_VARIANT: core
+  ROS_DOMAIN_ID: "42"
+  EXAMPLE_DIR: examples/colcon_windows_ci
+
+jobs:
+  windows:
+    name: colcon build and test, ROS from Conan
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: cmd
+        working-directory: examples/colcon_windows_ci
+
+    steps:
+      - name: Enable long paths for git
+        working-directory: ${{ github.workspace }}
+        run: git config --global core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        id: setup_python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          update-environment: false
+
+      # ROS spawns a lot of subprocesses; this Python has to be the one they all find.
+      - name: Prepend Python to PATH
+        shell: bash
+        run: echo "$(dirname '${{ steps.setup_python.outputs.python-path }}')" >> "$GITHUB_PATH"
+
+      # Service Fabric ships an msvcp140.dll that makes rcl_init() fail, and sh.exe on PATH
+      # confuses some of the vendored CMake builds.
+      - name: Clean up PATH
+        shell: pwsh
+        run: |
+          $path = ($env:PATH -split ';') | Where-Object {
+            $_ -and $_ -notmatch 'Service.Fabric' -and
+            -not (Test-Path (Join-Path $_ 'sh.exe') -ErrorAction SilentlyContinue)
+          }
+          "PATH=$($path -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Conan
+        run: |
+          python -m pip install --upgrade pip
+          pip install "conan>=2.20"
+          conan --version
+
+      - name: Clone the ros-conan recipe index
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch $env:ROS_CONAN_BRANCH `
+            https://github.com/conan-io/ros-conan.git "$env:RUNNER_TEMP/ros-conan"
+          $sha = git -C "$env:RUNNER_TEMP/ros-conan" rev-parse HEAD
+          "ROS_CONAN_SHA=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      # Building ros-kilted from source takes hours, so the Conan cache is the whole point of
+      # this job being affordable. A partial restore still saves most of the dependencies.
+      - name: Restore the Conan cache
+        id: conan_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-ros-kilted-${{ env.ROS_KILTED_VERSION }}-${{ env.ROS_KILTED_VARIANT }}-${{ env.ROS_CONAN_SHA }}-${{ hashFiles('examples/colcon_windows_ci/conanfile.txt', 'examples/colcon_windows_ci/profiles/ros') }}
+          restore-keys: |
+            conan-${{ runner.os }}-ros-kilted-${{ env.ROS_KILTED_VERSION }}-${{ env.ROS_KILTED_VARIANT }}-
+
+      - name: Configure Conan
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:CONAN_HOME | Out-Null
+          conan profile detect --force
+          conan remote add ros-conan "$env:RUNNER_TEMP/ros-conan" --type=local-recipes-index --force
+
+      # Also writes conanrosenv.bat: AMENT_PREFIX_PATH, CMAKE_PREFIX_PATH, CMAKE_TOOLCHAIN_FILE,
+      # PYTHONPATH and the MSVC environment, which is what makes colcon see this ROS.
+      - name: Install ROS and generate the colcon environment
+        run: >
+          conan install .
+          --profile:all=profiles/ros
+          -o ros-kilted/*:variant=%ROS_KILTED_VARIANT%
+          --build=missing
+
+      - name: Trim the Conan cache
+        run: conan cache clean "*" --source --build --temp
+
+      - name: Save the Conan cache
+        if: steps.conan_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: ${{ steps.conan_cache.outputs.cache-primary-key }}
+
+      - name: Show the ROS environment
+        run: call build\generators\conanrosenv.bat && ros2 pkg list && colcon list --base-paths src
+
+      - name: colcon build
+        id: build
+        run: >
+          call build\generators\conanrosenv.bat &&
+          colcon build --event-handlers console_cohesion+ --cmake-args " -DBUILD_TESTING=ON"
+
+      - name: colcon test
+        run: >
+          call build\generators\conanrosenv.bat &&
+          colcon test --event-handlers console_cohesion+ --return-code-on-test-failure
+
+      - name: colcon test-result
+        if: always() && steps.build.outcome == 'success'
+        run: call build\generators\conanrosenv.bat && colcon test-result --all --verbose
+
+      # colcon reports success for a package whose CTest tree holds no tests, so a green job
+      # proves nothing on its own. This is the step that makes the job mean something.
+      - name: Verify the tests really ran
+        if: always() && steps.build.outcome == 'success'
+        run: python ci\check_test_results.py --packages math_utils echo_node --min-tests-per-package 2
+
+      - name: Upload test results
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: colcon-test-results
+          path: |
+            ${{ env.EXAMPLE_DIR }}/build/**/test_results/**
+            ${{ env.EXAMPLE_DIR }}/build/**/Testing/**
+            ${{ env.EXAMPLE_DIR }}/log/**
+          if-no-files-found: warn

@@ -1,10 +1,26 @@
 #include "gopigo3_ros_node.hpp"
 
+#include "convoy_controller.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 
 using namespace std::chrono_literals;
+
+namespace
+{
+bool is_convoy_param(const std::string & name)
+{
+  return name == "robot_id" || name == "convoy_enable" || name == "convoy_role" ||
+         name == "cruise_speed" || name == "turbo_speed" || name == "gap_target_m" ||
+         name == "gap_kp" || name == "leader_timeout" || name == "color_min_saturation" ||
+         name == "color_min_clear" || name == "color_debounce" || name == "color_cooldown" ||
+         name == "handover_bias_rad" || name == "handover_fork_s" ||
+         name == "handover_siding_s" || name == "handover_pass_m" ||
+         name == "handover_pass_timeout" || name == "handover_rejoin_s";
+}
+}  // namespace
 
 GoPiGo3RosNode::GoPiGo3RosNode()
 : rclcpp::Node("gopigo3_ros"),
@@ -120,6 +136,7 @@ GoPiGo3RosNode::GoPiGo3RosNode()
     [this](const std::vector<rclcpp::Parameter> & params) {
       return on_set_parameters(params);
     });
+  convoy_ = std::make_unique<ConvoyController>(*this);
 
   if (std::string(get_namespace()) == "/") {
     RCLCPP_WARN(
@@ -163,7 +180,10 @@ void GoPiGo3RosNode::on_cmd_vel(const geometry_msgs::msg::Twist & msg)
 
 void GoPiGo3RosNode::on_timer()
 {
-  if (!stopped_ && (now() - last_cmd_time_) > cmd_timeout_) {
+  if (convoy_) {
+    convoy_->tick();
+  }
+  if (!stopped_ && !convoy_hold_ && (now() - last_cmd_time_) > cmd_timeout_) {
     stop();
   }
 }
@@ -195,7 +215,7 @@ void GoPiGo3RosNode::publish_line_follower()
   state.data = reading.state;
   line_state_pub_->publish(state);
 
-  if (line_follow_ && (now() - last_teleop_time_) > cmd_timeout_) {
+  if (line_follow_ && !convoy_hold_ && (now() - last_teleop_time_) > cmd_timeout_) {
     follow_line(reading);
   }
 }
@@ -222,6 +242,10 @@ void GoPiGo3RosNode::publish_color()
   std_msgs::msg::String name;
   name.data = reading.name;
   color_name_pub_->publish(name);
+
+  if (convoy_) {
+    convoy_->on_color(reading);
+  }
 }
 
 void GoPiGo3RosNode::follow_line(const LineFollowerReading & reading)
@@ -240,7 +264,8 @@ void GoPiGo3RosNode::follow_line(const LineFollowerReading & reading)
       return;
     }
     cmd.linear.x = line_follow_speed_ * 0.3;
-    cmd.angular.z = std::copysign(line_follow_kp_ * 0.5, -last_line_error_);
+    cmd.angular.z =
+      std::copysign(line_follow_kp_ * 0.5, -last_line_error_) + steer_bias_;
     last_cmd_time_ = stamp;
     drive(cmd);
     return;
@@ -260,7 +285,7 @@ void GoPiGo3RosNode::follow_line(const LineFollowerReading & reading)
   // wheel instead of driving around the curve.
   const double turn = std::min(std::abs(error) / 0.5, 1.0);
   cmd.linear.x = line_follow_speed_ * (1.0 - line_follow_slowdown_ * turn);
-  cmd.angular.z = -line_follow_kp_ * error - line_follow_kd_ * derivative;
+  cmd.angular.z = -line_follow_kp_ * error - line_follow_kd_ * derivative + steer_bias_;
 
   if (std::abs(cmd.angular.z) > max_angular_speed_) {
     RCLCPP_WARN_THROTTLE(
@@ -306,6 +331,41 @@ void GoPiGo3RosNode::stop()
 {
   driver_.stop();
   stopped_ = true;
+}
+
+void GoPiGo3RosNode::set_follow_speed(double speed)
+{
+  line_follow_speed_ = std::max(0.0, speed);
+}
+
+void GoPiGo3RosNode::set_steer_bias(double bias_rad)
+{
+  steer_bias_ = bias_rad;
+}
+
+void GoPiGo3RosNode::set_convoy_hold(bool hold)
+{
+  convoy_hold_ = hold;
+}
+
+double GoPiGo3RosNode::path_length_m()
+{
+  return driver_.path_length_m();
+}
+
+void GoPiGo3RosNode::set_eyes(double red, double green, double blue)
+{
+  driver_.set_eyes(red, green, blue);
+}
+
+void GoPiGo3RosNode::set_blinker_left(double brightness)
+{
+  driver_.set_blinker_left(brightness);
+}
+
+void GoPiGo3RosNode::set_blinker_right(double brightness)
+{
+  driver_.set_blinker_right(brightness);
 }
 
 void GoPiGo3RosNode::on_eye_left(const std_msgs::msg::ColorRGBA & msg)
@@ -370,6 +430,30 @@ rcl_interfaces::msg::SetParametersResult GoPiGo3RosNode::on_set_parameters(
         result.successful = false;
         result.reason = name + " cannot be negative";
       }
+    } else if (name == "robot_id") {
+      result.successful = false;
+      result.reason = "robot_id only takes effect when the node starts";
+    } else if (name == "convoy_role") {
+      const auto & role = param.as_string();
+      if (role != "leader" && role != "follower") {
+        result.successful = false;
+        result.reason = "convoy_role must be leader or follower";
+      }
+    } else if (name == "color_debounce") {
+      if (param.as_int() < 1) {
+        result.successful = false;
+        result.reason = "color_debounce must be >= 1";
+      }
+    } else if (
+      name == "cruise_speed" || name == "turbo_speed" || name == "gap_kp" ||
+      name == "leader_timeout" || name == "color_min_saturation" || name == "color_min_clear" ||
+      name == "color_cooldown" || name == "handover_fork_s" || name == "handover_siding_s" ||
+      name == "handover_pass_m" || name == "handover_pass_timeout" ||
+      name == "handover_rejoin_s") {
+      if (param.as_double() < 0.0) {
+        result.successful = false;
+        result.reason = name + " cannot be negative";
+      }
     } else if (
       name == "cmd_vel_topic" || name == "line_follower_topic" || name == "color_sensor_topic" ||
       name == "led_topic_prefix" || name == "line_follower_port" ||
@@ -387,6 +471,13 @@ rcl_interfaces::msg::SetParametersResult GoPiGo3RosNode::on_set_parameters(
 
   for (const auto & param : params) {
     const auto & name = param.get_name();
+    if (convoy_ && is_convoy_param(name)) {
+      const auto convoy_result = convoy_->apply_parameter(param);
+      if (!convoy_result.successful) {
+        return convoy_result;
+      }
+      continue;
+    }
     if (name == "line_follow") {
       line_follow_ = param.as_bool();
       last_line_error_ = 0.0;

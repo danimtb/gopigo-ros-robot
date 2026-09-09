@@ -463,6 +463,8 @@ void GoPiGo3Driver::guess_color(ColorReading & reading) const
       name = known.name;
     }
   }
+  reading.saturation = s;
+  reading.value = v;
   reading.name = name;
 }
 
@@ -507,6 +509,30 @@ void GoPiGo3Driver::stop()
 {
   gpg_->set_motor_dps(MOTOR_LEFT, 0);
   gpg_->set_motor_dps(MOTOR_RIGHT, 0);
+}
+
+bool GoPiGo3Driver::read_encoders(int32_t & left, int32_t & right)
+{
+  if (!gpg_) {
+    return false;
+  }
+  left = gpg_->get_motor_encoder(MOTOR_LEFT);
+  right = gpg_->get_motor_encoder(MOTOR_RIGHT);
+  return true;
+}
+
+double GoPiGo3Driver::path_length_m()
+{
+  int32_t left = 0;
+  int32_t right = 0;
+  if (!read_encoders(left, right)) {
+    return 0.0;
+  }
+  const double radius = wheel_radius();
+  constexpr double kPi = 3.14159265358979323846;
+  const double left_m = static_cast<double>(left) * kPi / 180.0 * radius;
+  const double right_m = static_cast<double>(right) * kPi / 180.0 * radius;
+  return 0.5 * (left_m + right_m);
 }
 
 double GoPiGo3Driver::wheel_radius() const

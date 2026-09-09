@@ -14,6 +14,8 @@
 
 #include "gopigo3_driver.hpp"
 
+class ConvoyController;
+
 // Translates the ROS 2 interface (a geometry_msgs/msg/Twist stream) into GoPiGo3 wheel
 // commands, and optionally publishes / follows the Dexter line follower and color sensor.
 class GoPiGo3RosNode : public rclcpp::Node
@@ -22,11 +24,20 @@ public:
   GoPiGo3RosNode();
   ~GoPiGo3RosNode() override;
 
+  void set_follow_speed(double speed);
+  double follow_speed() const { return line_follow_speed_; }
+  void set_steer_bias(double bias_rad);
+  void set_convoy_hold(bool hold);
+  void stop();
+  double path_length_m();
+  void set_eyes(double red, double green, double blue);
+  void set_blinker_left(double brightness);
+  void set_blinker_right(double brightness);
+
 private:
   void on_cmd_vel(const geometry_msgs::msg::Twist & msg);
   void on_timer();
   void drive(const geometry_msgs::msg::Twist & msg);
-  void stop();
   void publish_line_follower();
   void publish_color();
   void follow_line(const LineFollowerReading & reading);
@@ -59,6 +70,7 @@ private:
   rclcpp::TimerBase::SharedPtr color_timer_;
   rclcpp::TimerBase::SharedPtr watchdog_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_;
+  std::unique_ptr<ConvoyController> convoy_;
 
   rclcpp::Time last_cmd_time_;
   rclcpp::Time last_teleop_time_;
@@ -69,6 +81,8 @@ private:
   bool line_follower_ready_{false};
   bool line_follow_{false};
   bool color_ready_{false};
+  bool convoy_hold_{false};
+  double steer_bias_{0.0};
 
   double max_linear_speed_;
   double max_angular_speed_;

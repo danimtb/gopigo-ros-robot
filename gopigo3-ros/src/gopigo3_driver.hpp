@@ -42,6 +42,8 @@ struct ColorReading
   double green{0.0};
   double blue{0.0};
   double clear{0.0};
+  double saturation{0.0};
+  double value{0.0};
   std::string name{"unknown"};
 };
 
@@ -84,6 +86,12 @@ public:
   void set_wheel_speeds(double left_dps, double right_dps);
 
   void stop();
+
+  // Encoder ticks are degrees of wheel-shaft rotation since connect() (or the last offset).
+  bool read_encoders(int32_t & left, int32_t & right);
+
+  // Mean arc length of both wheels, metres. Returns 0 when the board is not connected.
+  double path_length_m();
 
   double wheel_radius() const;      // metres
   double wheel_separation() const;  // metres

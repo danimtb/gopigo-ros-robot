@@ -51,6 +51,7 @@ Use the robot IP.
 
 ```bash
 rsync -az --relative --info=progress2 build/Release/generators build/Release/gopigo3_ros_node deploy relocate_env.sh raspi@192.168.1.136:~/gopigo3-ros/
+rsync -az ../scripts/run_robot.sh raspi@192.168.1.136:~/gopigo3-ros/run_robot.sh
 ```
 
 `--relative` keeps `generators` three levels below `deploy/`, as the env scripts expect.
@@ -67,12 +68,17 @@ cd ~/gopigo3-ros
 bash relocate_env.sh
 . build/Release/generators/conanrun.sh
 export ROS_DOMAIN_ID=42
-./build/Release/gopigo3_ros_node --ros-args -r __ns:=/gopigo_a
+./build/Release/gopigo3_ros_node --ros-args -r __ns:=/gopigo_a -p line_follow:=true
+# or the convoy demo (leader on A, follower on B; solo = one robot as leader):
+bash run_robot.sh a leader
+bash run_robot.sh b follower
+bash run_robot.sh a solo
 ```
 
 Use a different `__ns` on the second robot (`/gopigo_b`). Same `ROS_DOMAIN_ID` so the laptop
 sees both. Topic names are relative (`cmd_vel`, `color`, `led/eyes`, …) and become
-`/gopigo_a/cmd_vel`, `/gopigo_a/color`, …
+`/gopigo_a/cmd_vel`, `/gopigo_a/color`, … The convoy bus is global: `/convoy/command`
+and `/convoy/peer`.
 
 `relocate_env.sh` once per transfer. A good deploy reaches ROS start-up, then fails on SPI if
 the board is off. A missing `.so` means the tree did not copy intact.
@@ -109,6 +115,24 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args \
 | `color_sensor_topic` | `color` |
 | `color_led` | `true` (board LED for reflected colour) |
 | `led_topic_prefix` | `led` |
+| `robot_id` | `a` (startup only; use `b` on the second robot) |
+| `convoy_enable` | `false` |
+| `convoy_role` | `leader` or `follower` |
+| `cruise_speed` | `0.10` m/s (yellow card) |
+| `turbo_speed` | `0.18` m/s (green card) |
+| `gap_target_m` | `0.0` (keep the spacing you placed at start) |
+| `gap_kp` | `0.8` |
+| `leader_timeout` | `0.8` s without a leader heartbeat → this robot leads |
+| `color_min_saturation` | `0.25` (ignore floor / grey) |
+| `color_min_clear` | `0.05` |
+| `color_debounce` | `2` matching colour reads |
+| `color_cooldown` | `1.2` s before the same card fires again |
+| `handover_bias_rad` | `1.2` (sign = which way the siding is) |
+| `handover_fork_s` | `0.6` |
+| `handover_siding_s` | `1.2` |
+| `handover_pass_m` | `0.6` |
+| `handover_pass_timeout` | `8.0` s |
+| `handover_rejoin_s` | `1.0` s |
 
 Do not put a leading `/` on those topic parameters: that would make them global and both robots
 would share the same names.
@@ -127,9 +151,9 @@ conan run "ros2 param get /gopigo_a/gopigo3_ros line_follow"
 Switching it off stops the wheels and leaves the robot waiting for `cmd_vel`; switching it on
 starts following `cmd_timeout` after the last teleop command, which is also how a teleop key
 takes the robot over mid-line without touching the parameter. Write the decimal point on the
-numbers (`700.0`, not `700`) or the value goes out as an integer and is refused. Topics, ports
-and `color_led` are wired up at start-up, so setting those is refused too, rather than
-accepted and ignored.
+numbers (`700.0`, not `700`) or the value goes out as an integer and is refused. Topics, ports,
+`color_led` and `robot_id` are wired up at start-up, so setting those is refused too, rather
+than accepted and ignored.
 
 The Dexter line follower (black board, 6 IR; red board, 5 IR) is read over I2C at `0x06`.
 Values are `0` (black) … `1` (white), left → right with the board arrow forward. On the Grove
@@ -168,6 +192,8 @@ brightness are 0…1. Names below are under the robot namespace (example: `/gopi
 | `led/eye/left`, `led/eye/right` | `std_msgs/ColorRGBA` |
 | `led/blinkers` | `std_msgs/Float32` (both red blinkers) |
 | `led/blinker/left`, `led/blinker/right` | `std_msgs/Float32` |
+| `/convoy/command` | `std_msgs/String`: `STOP`, `CRUISE`, `TURBO`, `HANDOVER` (global) |
+| `/convoy/peer` | `std_msgs/String` CSV `id,role,cmd,s_m,v_mps,seq` (global) |
 
 ```bash
 ./build/Release/gopigo3_ros_node --ros-args -r __ns:=/gopigo_a -p max_linear_speed:=0.15
@@ -184,6 +210,36 @@ conan run "ros2 topic echo /gopigo_a/color/name"
 conan run "ros2 topic pub /gopigo_a/led/eyes std_msgs/msg/ColorRGBA '{r: 0.0, g: 0.4, b: 1.0, a: 1.0}'"
 conan run "ros2 topic pub /gopigo_a/led/blinker/left std_msgs/msg/Float32 '{data: 1.0}'"
 ```
+
+## Convoy demo ("El Convoy Inteligente")
+
+Two robots on the same `ROS_DOMAIN_ID`, each with its own namespace. Only the leader
+reads colour cards; the follower copies `/convoy/command` and keeps spacing from encoder
+path length (`s_m` on `/convoy/peer`). Place them on the line with the gap you want:
+both start `s` at zero, so the follower holds that gap. Wheel slip drifts over long
+runs; there is no ultrasonic.
+
+Cards (leader only): red = stop both, yellow = cruise, green = turbo, blue = handover
+(leader takes the siding, follower becomes leader). Blue is ignored if no peer is on
+the network, so a single robot (`run_robot.sh a solo`) still does red / yellow / green.
+If the other robot disappears, `leader_timeout` promotes the remaining one.
+
+Eyes show the current command colour. The left blinker is the leader, the right blinker
+the follower.
+
+Stand transport is Fast DDS (the Kilted default already used with `ROS_DOMAIN_ID`).
+Zenoh is optional: only if your Conan `ros-kilted` tree contains `rmw_zenoh_cpp`, set
+`RMW_IMPLEMENTATION=rmw_zenoh_cpp` on every robot and start `rmw_zenohd` once.
+
+```bash
+# laptop, same ROS_DOMAIN_ID
+conan run "ros2 topic echo /convoy/command"
+conan run "ros2 topic echo /convoy/peer"
+conan run "ros2 param set /gopigo_a/gopigo3_ros cruise_speed 0.12"
+```
+
+Resilience check: start A as leader and B as follower, then power off B. A should keep
+answering red / yellow / green without a restart.
 
 Enable I2C in `raspi-config` if a sensor is on the I2C Grove. Use `-p line_follower_port:=AD1`
 or `-p color_sensor_port:=AD1` when that sensor is on Grove AD1. `-p color_sensor_port:=off`
