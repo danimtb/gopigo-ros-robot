@@ -201,7 +201,7 @@ conan run "ros2 topic pub /gopigo_a/led/eyes std_msgs/msg/ColorRGBA '{r: 0.0, g:
 conan run "ros2 topic pub /gopigo_a/led/blinker/left std_msgs/msg/Float32 '{data: 1.0}'"
 ```
 
-## Convoy demo ("El Convoy Inteligente")
+## Convoy demo
 
 Two robots on the same `ROS_DOMAIN_ID`, each with its own namespace. Start both the
 same way (`run_robot.sh a` / `run_robot.sh b`). Each begins as follower and becomes
