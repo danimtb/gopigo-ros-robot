@@ -1,8 +1,6 @@
 # gopigo-ros-robot
 
-Drive a [GoPiGo3](https://gopigo.io) with ROS 2 (`turtle_teleop_key` → `cmd_vel` → wheels).
-Two identical robots share one DDS domain: give each a namespace so topics do not collide
-(`-r __ns:=/gopigo_a` vs `/gopigo_b`).
+Drive a [GoPiGo3](https://gopigo.io) with ROS 2 (`turtle_teleop_key` → `/turtle1/cmd_vel` → wheels).
 ROS comes from Conan via [`ros-conan`](https://github.com/conan-io/ros-conan) (`ros-kilted`): no
 `apt`, no `rosdep`, no ROS distro on the Pi.
 
@@ -69,16 +67,15 @@ bash relocate_env.sh
 . build/Release/generators/conanrun.sh
 export ROS_DOMAIN_ID=42
 ./build/Release/gopigo3_ros_node --ros-args -r __ns:=/gopigo_a -p line_follow:=true
-# or the convoy demo (leader on A, follower on B; solo = one robot as leader):
-bash run_robot.sh a leader
-bash run_robot.sh b follower
-bash run_robot.sh a solo
+# or the convoy demo (first robot without a leader elects itself):
+bash run_robot.sh a
+bash run_robot.sh b
 ```
 
 Use a different `__ns` on the second robot (`/gopigo_b`). Same `ROS_DOMAIN_ID` so the laptop
 sees both. Topic names are relative (`cmd_vel`, `color`, `led/eyes`, …) and become
 `/gopigo_a/cmd_vel`, `/gopigo_a/color`, … The convoy bus is global: `/convoy/command`
-and `/convoy/peer`.
+and `/convoy/peer`. They do not drive until you publish `START` on `/convoy/run`.
 
 `relocate_env.sh` once per transfer. A good deploy reaches ROS start-up, then fails on SPI if
 the board is off. A missing `.so` means the tree did not copy intact.
@@ -91,8 +88,7 @@ namespace:
 ```bash
 export ROS_DOMAIN_ID=42
 conan run "ros2 run turtlesim turtlesim_node"
-conan run "ros2 run turtlesim turtle_teleop_key --ros-args \
-  -r /turtle1/cmd_vel:=/gopigo_a/cmd_vel -p scale_linear:=0.2 -p scale_angular:=1.0"
+conan run "ros2 run turtlesim turtle_teleop_key --ros-args -r /turtle1/cmd_vel:=/gopigo_a/cmd_vel -p scale_linear:=0.2 -p scale_angular:=1.0"
 ```
 
 | Parameter | Default |
@@ -117,22 +113,15 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args \
 | `led_topic_prefix` | `led` |
 | `robot_id` | `a` (startup only; use `b` on the second robot) |
 | `convoy_enable` | `false` |
-| `convoy_role` | `leader` or `follower` |
-| `cruise_speed` | `0.10` m/s (yellow card) |
-| `turbo_speed` | `0.18` m/s (green card) |
-| `gap_target_m` | `0.0` (keep the spacing you placed at start) |
-| `gap_kp` | `0.8` |
-| `leader_timeout` | `0.8` s without a leader heartbeat → this robot leads |
+| `convoy_role` | `follower` (auto-elects if no leader; `ros2 param set` still works) |
+| `cruise_speed` | `0.06` m/s (green card; slow so the stand is readable) |
+| `turbo_speed` | `0.09` m/s (yellow card) |
+| `sync_pause` | `1.2` s stopped on both robots before a speed or role change (`0.0` disables) |
+| `leader_timeout` | `3.0` s without a leader heartbeat → this robot leads |
 | `color_min_saturation` | `0.25` (ignore floor / grey) |
 | `color_min_clear` | `0.05` |
 | `color_debounce` | `2` matching colour reads |
-| `color_cooldown` | `1.2` s before the same card fires again |
-| `handover_bias_rad` | `1.2` (sign = which way the siding is) |
-| `handover_fork_s` | `0.6` |
-| `handover_siding_s` | `1.2` |
-| `handover_pass_m` | `0.6` |
-| `handover_pass_timeout` | `8.0` s |
-| `handover_rejoin_s` | `1.0` s |
+| `color_cooldown` | `3.0` s before the same card fires again (matches the eye flash) |
 
 Do not put a leading `/` on those topic parameters: that would make them global and both robots
 would share the same names.
@@ -193,7 +182,8 @@ brightness are 0…1. Names below are under the robot namespace (example: `/gopi
 | `led/blinkers` | `std_msgs/Float32` (both red blinkers) |
 | `led/blinker/left`, `led/blinker/right` | `std_msgs/Float32` |
 | `/convoy/command` | `std_msgs/String`: `STOP`, `CRUISE`, `TURBO`, `HANDOVER` (global) |
-| `/convoy/peer` | `std_msgs/String` CSV `id,role,cmd,s_m,v_mps,seq` (global) |
+| `/convoy/peer` | `std_msgs/String` CSV `id,role,cmd,v_mps,seq,term` (global) |
+| `/convoy/run` | `std_msgs/String`: `START` or `STOP` (global; robots stay still until `START`) |
 
 ```bash
 ./build/Release/gopigo3_ros_node --ros-args -r __ns:=/gopigo_a -p max_linear_speed:=0.15
@@ -213,33 +203,56 @@ conan run "ros2 topic pub /gopigo_a/led/blinker/left std_msgs/msg/Float32 '{data
 
 ## Convoy demo ("El Convoy Inteligente")
 
-Two robots on the same `ROS_DOMAIN_ID`, each with its own namespace. Only the leader
-reads colour cards; the follower copies `/convoy/command` and keeps spacing from encoder
-path length (`s_m` on `/convoy/peer`). Place them on the line with the gap you want:
-both start `s` at zero, so the follower holds that gap. Wheel slip drifts over long
-runs; there is no ultrasonic.
+Two robots on the same `ROS_DOMAIN_ID`, each with its own namespace. Start both the
+same way (`run_robot.sh a` / `run_robot.sh b`). Each begins as follower and becomes
+leader if no leader appears on `/convoy/peer` within `leader_timeout` (3 s). Only the
+leader applies colour cards; the follower copies `/convoy/command`.
 
-Cards (leader only): red = stop both, yellow = cruise, green = turbo, blue = handover
-(leader takes the siding, follower becomes leader). Blue is ignored if no peer is on
-the network, so a single robot (`run_robot.sh a solo`) still does red / yellow / green.
-If the other robot disappears, `leader_timeout` promotes the remaining one.
+Both robots run the same speed off the same order, and neither measures the gap. Before a
+speed or role change they both stop for `sync_pause`, blink the card colour as a countdown
+and leave together, so the leader cannot pull away while the order is still in flight. The
+leader waits out the pause too: it publishes the order first and applies it at the end, like
+the follower. A red card skips the pause, since a stop needs no countdown.
 
-Eyes show the current command colour. The left blinker is the leader, the right blinker
-the follower.
+They stay still until `START` on `/convoy/run`. Place them on the line with the gap
+you want before that. Nothing holds that gap: wheel slip drifts it, and there is no
+ultrasonic. `v_mps` on `/convoy/peer` is the number to echo when checking that both robots
+agree on speed.
+
+Cards: red = stop, yellow = turbo, green = cruise, blue = swap roles (no overtake).
+Blue with no peer is ignored (red flash). If the follower disappears, the leader
+keeps going. If the leader is silent for 3 s, the other robot takes over with a
+higher `term`; when the old leader reconnects it yields (lower term).
+
+Eyes (low brightness) are the stand UI:
+
+| Pattern | Meaning |
+| --- | --- |
+| Slow white blink | Waiting for `/convoy/run START` |
+| Fast blink then solid (yellow / green / blue) | Sync pause before a speed or role change; both leave on the solid |
+| Flash red (~3 s) | Red card (both stop), follower saw a card, or blue with no peer |
+| Flash yellow / green (~3 s) | Card read, but that speed was already in effect |
+| Both eyes on | Leader, peer present |
+| Both eyes off | Follower |
+| Left eye on | Leader, one robot (never saw a peer) |
+| Left eye blinking | Leader, peer lost (WiFi) |
+| Flash white | `START`, or peer back / yielded the lead |
 
 Stand transport is Fast DDS (the Kilted default already used with `ROS_DOMAIN_ID`).
 Zenoh is optional: only if your Conan `ros-kilted` tree contains `rmw_zenoh_cpp`, set
 `RMW_IMPLEMENTATION=rmw_zenoh_cpp` on every robot and start `rmw_zenohd` once.
 
 ```bash
-# laptop, same ROS_DOMAIN_ID
+# laptop, same ROS_DOMAIN_ID. Start both Pi nodes first, then:
+conan run "ros2 topic pub --once /convoy/run std_msgs/msg/String '{data: START}'"
+conan run "ros2 topic pub --once /convoy/run std_msgs/msg/String '{data: STOP}'"
 conan run "ros2 topic echo /convoy/command"
 conan run "ros2 topic echo /convoy/peer"
 conan run "ros2 param set /gopigo_a/gopigo3_ros cruise_speed 0.12"
 ```
 
-Resilience check: start A as leader and B as follower, then power off B. A should keep
-answering red / yellow / green without a restart.
+Resilience check: start both nodes, `START`, then power off one robot. The other
+should keep answering red / yellow / green without a restart.
 
 Enable I2C in `raspi-config` if a sensor is on the I2C Grove. Use `-p line_follower_port:=AD1`
 or `-p color_sensor_port:=AD1` when that sensor is on Grove AD1. `-p color_sensor_port:=off`

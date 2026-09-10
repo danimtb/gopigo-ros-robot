@@ -29,10 +29,10 @@ public:
   void set_steer_bias(double bias_rad);
   void set_convoy_hold(bool hold);
   void stop();
-  double path_length_m();
+  bool teleop_recent() const;
   void set_eyes(double red, double green, double blue);
-  void set_blinker_left(double brightness);
-  void set_blinker_right(double brightness);
+  void set_eye_left(double red, double green, double blue);
+  void set_eye_right(double red, double green, double blue);
 
 private:
   void on_cmd_vel(const geometry_msgs::msg::Twist & msg);
@@ -66,6 +66,11 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr blinker_left_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr blinker_right_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr blinkers_sub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr convoy_command_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr convoy_peer_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr convoy_command_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr convoy_peer_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr convoy_run_sub_;
   rclcpp::TimerBase::SharedPtr line_timer_;
   rclcpp::TimerBase::SharedPtr color_timer_;
   rclcpp::TimerBase::SharedPtr watchdog_;

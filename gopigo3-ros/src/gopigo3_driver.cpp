@@ -470,18 +470,49 @@ void GoPiGo3Driver::guess_color(ColorReading & reading) const
 
 void GoPiGo3Driver::set_eye_left(double red, double green, double blue)
 {
-  gpg_->set_led(LED_EYE_LEFT, to_pwm(red), to_pwm(green), to_pwm(blue));
+  const uint8_t r = to_pwm(red);
+  const uint8_t g = to_pwm(green);
+  const uint8_t b = to_pwm(blue);
+  if (eye_left_valid_ && eye_left_r_ == r && eye_left_g_ == g && eye_left_b_ == b) {
+    return;
+  }
+  gpg_->set_led(LED_EYE_LEFT, r, g, b);
+  eye_left_valid_ = true;
+  eye_left_r_ = r;
+  eye_left_g_ = g;
+  eye_left_b_ = b;
 }
 
 void GoPiGo3Driver::set_eye_right(double red, double green, double blue)
 {
-  gpg_->set_led(LED_EYE_RIGHT, to_pwm(red), to_pwm(green), to_pwm(blue));
+  const uint8_t r = to_pwm(red);
+  const uint8_t g = to_pwm(green);
+  const uint8_t b = to_pwm(blue);
+  if (eye_right_valid_ && eye_right_r_ == r && eye_right_g_ == g && eye_right_b_ == b) {
+    return;
+  }
+  gpg_->set_led(LED_EYE_RIGHT, r, g, b);
+  eye_right_valid_ = true;
+  eye_right_r_ = r;
+  eye_right_g_ = g;
+  eye_right_b_ = b;
 }
 
 void GoPiGo3Driver::set_eyes(double red, double green, double blue)
 {
-  gpg_->set_led(
-    LED_EYE_LEFT | LED_EYE_RIGHT, to_pwm(red), to_pwm(green), to_pwm(blue));
+  const uint8_t r = to_pwm(red);
+  const uint8_t g = to_pwm(green);
+  const uint8_t b = to_pwm(blue);
+  if (eye_left_valid_ && eye_right_valid_ && eye_left_r_ == r && eye_left_g_ == g &&
+      eye_left_b_ == b && eye_right_r_ == r && eye_right_g_ == g && eye_right_b_ == b) {
+    return;
+  }
+  gpg_->set_led(LED_EYE_LEFT | LED_EYE_RIGHT, r, g, b);
+  eye_left_valid_ = true;
+  eye_right_valid_ = true;
+  eye_left_r_ = eye_right_r_ = r;
+  eye_left_g_ = eye_right_g_ = g;
+  eye_left_b_ = eye_right_b_ = b;
 }
 
 void GoPiGo3Driver::set_blinker_left(double brightness)

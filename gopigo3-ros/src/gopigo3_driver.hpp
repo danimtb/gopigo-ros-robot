@@ -127,4 +127,14 @@ private:
   LineFollowerKind lf_kind_{LineFollowerKind::None};
   uint8_t tcs_atime_{254};  // 2 × 2.4 ms, Dexter default
   int i2c_fd_{-1};
+
+  // SPI LED writes are relatively slow; skip them when the PWM has not changed.
+  bool eye_left_valid_{false};
+  bool eye_right_valid_{false};
+  uint8_t eye_left_r_{0};
+  uint8_t eye_left_g_{0};
+  uint8_t eye_left_b_{0};
+  uint8_t eye_right_r_{0};
+  uint8_t eye_right_g_{0};
+  uint8_t eye_right_b_{0};
 };

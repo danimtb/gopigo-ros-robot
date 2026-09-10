@@ -4,6 +4,7 @@
 #include <cmath>
 #include <exception>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include "gopigo3_ros_node.hpp"
@@ -20,57 +21,76 @@ std::vector<std::string> split_csv(const std::string & text)
   }
   return parts;
 }
+
+constexpr double kEyeBrightness = 0.25;
+constexpr double kFlashSeconds = 3.0;
+// Half period of the blink that counts the sync pause down, and the solid "go" that
+// closes it.
+constexpr double kSyncBlinkSeconds = 0.15;
+constexpr double kSyncGoSeconds = 0.3;
+
+struct Rgb
+{
+  double r;
+  double g;
+  double b;
+};
+
+Rgb card_rgb(const std::string & card)
+{
+  if (card == "red") {
+    return {1.0, 0.0, 0.0};
+  }
+  if (card == "yellow") {
+    return {1.0, 0.75, 0.0};
+  }
+  if (card == "green") {
+    return {0.0, 1.0, 0.0};
+  }
+  if (card == "blue") {
+    return {0.0, 0.0, 1.0};
+  }
+  return {1.0, 1.0, 1.0};
+}
 }  // namespace
 
-ConvoyController::ConvoyController(GoPiGo3RosNode & robot)
-: robot_(robot)
+ConvoyController::ConvoyController(
+  GoPiGo3RosNode & robot,
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr command_pub,
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr peer_pub)
+: robot_(robot),
+  command_pub_(std::move(command_pub)),
+  peer_pub_(std::move(peer_pub))
 {
   declare_parameters();
   load_parameters();
 
-  auto command_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
-  auto peer_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
-
-  command_pub_ = robot_.create_publisher<std_msgs::msg::String>("/convoy/command", command_qos);
-  peer_pub_ = robot_.create_publisher<std_msgs::msg::String>("/convoy/peer", peer_qos);
-  command_sub_ = robot_.create_subscription<std_msgs::msg::String>(
-    "/convoy/command", command_qos,
-    [this](const std_msgs::msg::String & msg) { on_command(msg); });
-  peer_sub_ = robot_.create_subscription<std_msgs::msg::String>(
-    "/convoy/peer", peer_qos, [this](const std_msgs::msg::String & msg) { on_peer(msg); });
-
-  reset_path_offset();
   last_leader_seen_ = robot_.now();
-  if (enabled_ && role_ == Role::Leader) {
-    apply_command(Command::Cruise, false);
-    publish_command();
+  if (enabled_) {
+    robot_.set_convoy_hold(true);
+    robot_.stop();
   }
 
   RCLCPP_INFO(
-    robot_.get_logger(), "Convoy %s: id='%s' role=%s", enabled_ ? "enabled" : "disabled",
-    robot_id_.c_str(), role_name(role_));
+    robot_.get_logger(),
+    "Convoy %s: id='%s' starting as follower; elects leader if none appears. "
+    "Waiting for /convoy/run START",
+    enabled_ ? "enabled" : "disabled", robot_id_.c_str());
 }
 
 void ConvoyController::declare_parameters()
 {
   robot_.declare_parameter<std::string>("robot_id", robot_id_);
   robot_.declare_parameter<bool>("convoy_enable", enabled_);
-  robot_.declare_parameter<std::string>("convoy_role", "leader");
+  robot_.declare_parameter<std::string>("convoy_role", "follower");
   robot_.declare_parameter<double>("cruise_speed", cruise_speed_);
   robot_.declare_parameter<double>("turbo_speed", turbo_speed_);
-  robot_.declare_parameter<double>("gap_target_m", gap_target_m_);
-  robot_.declare_parameter<double>("gap_kp", gap_kp_);
+  robot_.declare_parameter<double>("sync_pause", sync_pause_s_);
   robot_.declare_parameter<double>("leader_timeout", leader_timeout_s_);
   robot_.declare_parameter<double>("color_min_saturation", color_min_saturation_);
   robot_.declare_parameter<double>("color_min_clear", color_min_clear_);
   robot_.declare_parameter<int>("color_debounce", color_debounce_);
   robot_.declare_parameter<double>("color_cooldown", color_cooldown_s_);
-  robot_.declare_parameter<double>("handover_bias_rad", handover_bias_rad_);
-  robot_.declare_parameter<double>("handover_fork_s", handover_fork_s_);
-  robot_.declare_parameter<double>("handover_siding_s", handover_siding_s_);
-  robot_.declare_parameter<double>("handover_pass_m", handover_pass_m_);
-  robot_.declare_parameter<double>("handover_pass_timeout", handover_pass_timeout_s_);
-  robot_.declare_parameter<double>("handover_rejoin_s", handover_rejoin_s_);
 }
 
 void ConvoyController::load_parameters()
@@ -78,22 +98,18 @@ void ConvoyController::load_parameters()
   robot_id_ = robot_.get_parameter("robot_id").as_string();
   enabled_ = robot_.get_parameter("convoy_enable").as_bool();
   const auto role = robot_.get_parameter("convoy_role").as_string();
-  role_ = (role == "follower") ? Role::Follower : Role::Leader;
+  role_ = (role == "leader") ? Role::Leader : Role::Follower;
+  if (role_ == Role::Leader) {
+    term_ = 1;
+  }
   cruise_speed_ = robot_.get_parameter("cruise_speed").as_double();
   turbo_speed_ = robot_.get_parameter("turbo_speed").as_double();
-  gap_target_m_ = robot_.get_parameter("gap_target_m").as_double();
-  gap_kp_ = robot_.get_parameter("gap_kp").as_double();
+  sync_pause_s_ = robot_.get_parameter("sync_pause").as_double();
   leader_timeout_s_ = robot_.get_parameter("leader_timeout").as_double();
   color_min_saturation_ = robot_.get_parameter("color_min_saturation").as_double();
   color_min_clear_ = robot_.get_parameter("color_min_clear").as_double();
   color_debounce_ = robot_.get_parameter("color_debounce").as_int();
   color_cooldown_s_ = robot_.get_parameter("color_cooldown").as_double();
-  handover_bias_rad_ = robot_.get_parameter("handover_bias_rad").as_double();
-  handover_fork_s_ = robot_.get_parameter("handover_fork_s").as_double();
-  handover_siding_s_ = robot_.get_parameter("handover_siding_s").as_double();
-  handover_pass_m_ = robot_.get_parameter("handover_pass_m").as_double();
-  handover_pass_timeout_s_ = robot_.get_parameter("handover_pass_timeout").as_double();
-  handover_rejoin_s_ = robot_.get_parameter("handover_rejoin_s").as_double();
 }
 
 rcl_interfaces::msg::SetParametersResult ConvoyController::apply_parameter(
@@ -116,7 +132,7 @@ rcl_interfaces::msg::SetParametersResult ConvoyController::apply_parameter(
       return result;
     }
     if (role == "leader") {
-      become_leader(cmd_ == Command::Handover ? Command::Cruise : cmd_);
+      become_leader(drive_command());
     } else {
       become_follower();
     }
@@ -124,9 +140,6 @@ rcl_interfaces::msg::SetParametersResult ConvoyController::apply_parameter(
   }
   if (name == "convoy_enable") {
     enabled_ = param.as_bool();
-    if (enabled_ && role_ == Role::Leader) {
-      publish_command();
-    }
     return result;
   }
   if (name == "color_debounce") {
@@ -140,7 +153,7 @@ rcl_interfaces::msg::SetParametersResult ConvoyController::apply_parameter(
   }
 
   const double value = param.as_double();
-  if (value < 0.0 && name != "handover_bias_rad" && name != "gap_target_m") {
+  if (value < 0.0) {
     result.successful = false;
     result.reason = name + " cannot be negative";
     return result;
@@ -149,10 +162,8 @@ rcl_interfaces::msg::SetParametersResult ConvoyController::apply_parameter(
     cruise_speed_ = value;
   } else if (name == "turbo_speed") {
     turbo_speed_ = value;
-  } else if (name == "gap_target_m") {
-    gap_target_m_ = value;
-  } else if (name == "gap_kp") {
-    gap_kp_ = value;
+  } else if (name == "sync_pause") {
+    sync_pause_s_ = value;
   } else if (name == "leader_timeout") {
     leader_timeout_s_ = value;
   } else if (name == "color_min_saturation") {
@@ -161,69 +172,57 @@ rcl_interfaces::msg::SetParametersResult ConvoyController::apply_parameter(
     color_min_clear_ = value;
   } else if (name == "color_cooldown") {
     color_cooldown_s_ = value;
-  } else if (name == "handover_bias_rad") {
-    handover_bias_rad_ = value;
-  } else if (name == "handover_fork_s") {
-    handover_fork_s_ = value;
-  } else if (name == "handover_siding_s") {
-    handover_siding_s_ = value;
-  } else if (name == "handover_pass_m") {
-    handover_pass_m_ = value;
-  } else if (name == "handover_pass_timeout") {
-    handover_pass_timeout_s_ = value;
-  } else if (name == "handover_rejoin_s") {
-    handover_rejoin_s_ = value;
   }
   return result;
 }
 
 void ConvoyController::on_color(const ColorReading & reading)
 {
-  if (!enabled_ || role_ != Role::Leader) {
+  if (!enabled_ || !running_) {
+    return;
+  }
+  // The eyes are already counting a pause down, and the wheels are parked: taking a
+  // second card here would restart the sequence the follower is waiting on.
+  if (sync_kind_ != SyncKind::None) {
     return;
   }
 
   std::string card;
-  if (!is_card(reading, card)) {
-    debounce_name_.clear();
-    debounce_count_ = 0;
+  if (!accept_card(reading, card)) {
     return;
   }
 
-  if (card == debounce_name_) {
-    ++debounce_count_;
-  } else {
-    debounce_name_ = card;
-    debounce_count_ = 1;
-  }
-  if (debounce_count_ < color_debounce_) {
+  if (role_ != Role::Leader) {
+    flash_reject();
     return;
   }
 
-  const auto stamp = robot_.now();
-  if (card == last_card_ && last_card_time_.nanoseconds() != 0 &&
-      (stamp - last_card_time_).seconds() < color_cooldown_s_) {
-    return;
-  }
-  last_card_ = card;
-  last_card_time_ = stamp;
-
-  if (card == "red") {
-    apply_command(Command::Stop, false);
-    publish_command();
-  } else if (card == "yellow") {
-    apply_command(Command::Cruise, false);
-    publish_command();
-  } else if (card == "green") {
-    apply_command(Command::Turbo, false);
-    publish_command();
-  } else if (card == "blue") {
+  if (card == "blue") {
     if (!peer_.valid) {
-      RCLCPP_INFO(robot_.get_logger(), "Blue card ignored: no follower on the network");
+      flash_reject();
+      RCLCPP_INFO(robot_.get_logger(), "Blue card ignored: no peer on the network");
       return;
     }
     start_handover();
+    return;
   }
+  if (card == "red") {
+    // A stop is not worth a countdown, and both robots brake on their own copy.
+    flash_card(card);
+    apply_drive(Command::Stop);
+    publish_command(Command::Stop);
+    return;
+  }
+
+  const Command next = (card == "yellow") ? Command::Turbo : Command::Cruise;
+  // Hand the order over before applying it: this robot used to speed up here and pull
+  // away while the follower was still waiting for /convoy/command.
+  publish_command(next);
+  if (next == drive_command()) {
+    flash_card(card);
+    return;
+  }
+  begin_sync(SyncKind::Speed, next);
 }
 
 void ConvoyController::tick()
@@ -235,57 +234,41 @@ void ConvoyController::tick()
   const auto stamp = robot_.now();
   if (peer_.valid && (stamp - peer_.stamp).seconds() > leader_timeout_s_ * 2.0) {
     peer_.valid = false;
+    if (had_peer_) {
+      peer_lost_ = true;
+    }
   }
-  if (peer_.valid && peer_is_leader()) {
+  if (peer_.valid && peer_.role == Role::Leader) {
     last_leader_seen_ = stamp;
   }
 
-  if (role_ == Role::Follower && (stamp - last_leader_seen_).seconds() > leader_timeout_s_) {
-    RCLCPP_WARN(robot_.get_logger(), "No leader heartbeat; this robot is taking the lead");
-    become_leader(cmd_ == Command::Handover || cmd_ == Command::Stop ? Command::Cruise : cmd_);
-    publish_command();
+  if (sync_kind_ == SyncKind::None) {
+    // Mid-handover both robots claim the lead for a tick, which resolve_roles would
+    // read as a clash and undo the swap.
+    maybe_elect();
+    resolve_roles();
   }
 
-  resolve_roles();
-
-  if (role_ == Role::LeaderSiding) {
-    const double elapsed = (stamp - phase_since_).seconds();
-    if (elapsed < handover_fork_s_) {
-      robot_.set_steer_bias(handover_bias_rad_);
-    } else {
-      robot_.set_steer_bias(0.0);
-    }
-    if (elapsed >= handover_fork_s_ + handover_siding_s_) {
-      role_ = Role::Waiting;
-      robot_.set_steer_bias(0.0);
-      robot_.set_convoy_hold(true);
+  if (!running_) {
+    robot_.set_convoy_hold(true);
+    // Do not fight teleop: previously this stop() ran every 50 ms and made the
+    // robot stutter. Leave the wheels alone while a recent cmd_vel is in play.
+    if (!robot_.teleop_recent()) {
       robot_.stop();
-      rejoin_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-      RCLCPP_INFO(robot_.get_logger(), "Handover: waiting on the siding");
     }
-  } else if (role_ == Role::Passing) {
-    const double gone = reported_path() - pass_s0_;
-    const double elapsed = (stamp - phase_since_).seconds();
-    if (gone >= handover_pass_m_ || elapsed >= handover_pass_timeout_s_) {
-      become_leader(Command::Cruise);
-      publish_command();
-      RCLCPP_INFO(robot_.get_logger(), "Handover: this robot is the new leader");
+    last_v_ = 0.0;
+    apply_leds();
+    publish_peer();
+    return;
+  }
+
+  if (sync_kind_ != SyncKind::None) {
+    if (stamp < sync_until_) {
+      apply_sync_leds();
+      publish_peer();
+      return;
     }
-  } else if (role_ == Role::Waiting) {
-    if (peer_.valid && peer_.role == Role::Leader) {
-      if (rejoin_since_.nanoseconds() == 0) {
-        rejoin_since_ = stamp;
-      }
-      if ((stamp - rejoin_since_).seconds() >= handover_rejoin_s_) {
-        become_follower();
-        last_leader_seen_ = stamp;
-        RCLCPP_INFO(robot_.get_logger(), "Handover: rejoining as follower");
-      }
-    } else if ((stamp - last_leader_seen_).seconds() > leader_timeout_s_ + handover_pass_timeout_s_) {
-      become_leader(Command::Cruise);
-      publish_command();
-      RCLCPP_WARN(robot_.get_logger(), "Handover timed out; this robot is taking the lead");
-    }
+    finish_sync();
   }
 
   apply_motion();
@@ -293,22 +276,58 @@ void ConvoyController::tick()
   publish_peer();
 }
 
+void ConvoyController::maybe_elect()
+{
+  if (role_ != Role::Follower) {
+    return;
+  }
+  if (peer_.valid && peer_.role == Role::Leader) {
+    return;
+  }
+  if ((robot_.now() - last_leader_seen_).seconds() <= leader_timeout_s_) {
+    return;
+  }
+  RCLCPP_WARN(robot_.get_logger(), "No leader on the network; this robot is taking the lead");
+  become_leader(drive_command());
+  if (running_) {
+    publish_command(drive_command());
+  }
+}
+
 void ConvoyController::on_command(const std_msgs::msg::String & msg)
 {
+  if (!running_ || role_ != Role::Follower) {
+    return;
+  }
   Command cmd = Command::Cruise;
   if (!parse_command(msg.data, cmd)) {
     return;
   }
-  if (role_ != Role::Follower && role_ != Role::Passing) {
+  if (cmd == Command::Stop) {
+    // Brake now and drop any pause in progress, rather than finishing the countdown.
+    sync_kind_ = SyncKind::None;
+    flash_card(card_name(cmd));
+    apply_drive(cmd);
     return;
   }
-  apply_command(cmd, true);
+  if (sync_kind_ != SyncKind::None) {
+    return;
+  }
+  if (cmd == Command::Handover) {
+    begin_sync(SyncKind::TakeLead, drive_command());
+    return;
+  }
+  if (cmd == drive_command()) {
+    // A new leader re-announces the speed already in effect, which needs no pause.
+    return;
+  }
+  begin_sync(SyncKind::Speed, cmd);
 }
 
 void ConvoyController::on_peer(const std_msgs::msg::String & msg)
 {
   const auto parts = split_csv(msg.data);
-  if (parts.size() < 6) {
+  if (parts.size() < 5) {
     return;
   }
   if (parts[0] == robot_id_) {
@@ -320,133 +339,253 @@ void ConvoyController::on_peer(const std_msgs::msg::String & msg)
     return;
   }
   try {
+    const bool was_valid = peer_.valid;
     peer_.id = parts[0];
     peer_.role = role;
     peer_.cmd = cmd;
-    peer_.s_m = std::stod(parts[3]);
-    peer_.v_mps = std::stod(parts[4]);
-    peer_.seq = static_cast<std::uint32_t>(std::stoul(parts[5]));
+    // parts[3] is the peer's speed, published for `ros2 topic echo` only: nothing here
+    // steers by it now that both robots run the speed that came over /convoy/command.
+    peer_.seq = static_cast<std::uint32_t>(std::stoul(parts[4]));
+    peer_.term = (parts.size() >= 6) ? static_cast<std::uint32_t>(std::stoul(parts[5])) : 0;
     peer_.stamp = robot_.now();
     peer_.valid = true;
+    had_peer_ = true;
+    if (!was_valid) {
+      if (peer_lost_) {
+        flash_rgb(1.0, 1.0, 1.0);
+      }
+      peer_lost_ = false;
+    }
   } catch (const std::exception &) {
     return;
   }
 }
 
-void ConvoyController::apply_command(Command cmd, bool from_network)
+void ConvoyController::on_run(const std_msgs::msg::String & msg)
 {
-  cmd_ = cmd;
-  if (from_network && cmd == Command::Handover && role_ == Role::Follower) {
-    role_ = Role::Passing;
-    phase_since_ = robot_.now();
-    pass_s0_ = reported_path();
-    robot_.set_steer_bias(0.0);
-    robot_.set_convoy_hold(false);
-    RCLCPP_INFO(robot_.get_logger(), "Handover: passing on the main line");
+  std::string order = msg.data;
+  while (!order.empty() && (order.back() == '\n' || order.back() == '\r' || order.back() == ' ')) {
+    order.pop_back();
   }
+  if (order == "START" || order == "start" || order == "GO" || order == "go") {
+    set_running(true);
+  } else if (order == "STOP" || order == "stop") {
+    set_running(false);
+  }
+}
+
+void ConvoyController::set_running(bool running)
+{
+  if (!enabled_ || running_ == running) {
+    return;
+  }
+  running_ = running;
+  if (!running_) {
+    robot_.set_convoy_hold(true);
+    robot_.stop();
+    last_v_ = 0.0;
+    sync_kind_ = SyncKind::None;
+    RCLCPP_INFO(robot_.get_logger(), "Convoy paused; publish START on /convoy/run to resume");
+    return;
+  }
+  flash_rgb(1.0, 1.0, 1.0);
+  if (role_ == Role::Leader) {
+    apply_drive(Command::Cruise);
+    publish_command(Command::Cruise);
+  }
+  RCLCPP_INFO(robot_.get_logger(), "Convoy START");
+}
+
+void ConvoyController::apply_drive(Command cmd)
+{
+  if (cmd == Command::Handover) {
+    return;
+  }
+  last_drive_cmd_ = cmd;
 }
 
 void ConvoyController::apply_motion()
 {
-  if (role_ == Role::Waiting || cmd_ == Command::Stop) {
+  const Command drive = drive_command();
+  if (drive == Command::Stop) {
     robot_.set_convoy_hold(true);
     robot_.stop();
     last_v_ = 0.0;
     return;
   }
 
+  // Leader and follower run the same table of speeds off the same order, so there is
+  // nothing to correct: the pause in begin_sync() is what keeps them together. An
+  // encoder gap controller used to live here and would slam one robot to the speed
+  // cap while the other sat at zero, because the two odometers had no shared origin.
   robot_.set_convoy_hold(false);
-  double v = command_speed(cmd_ == Command::Handover ? Command::Cruise : cmd_);
-  if (role_ == Role::Follower && peer_.valid && peer_is_leader() && cmd_ != Command::Handover) {
-    const double error = (reported_path() - peer_.s_m) - gap_target_m_;
-    v -= gap_kp_ * error;
+  last_v_ = command_speed(drive);
+  robot_.set_follow_speed(last_v_);
+}
+
+void ConvoyController::begin_sync(SyncKind kind, Command cmd)
+{
+  sync_kind_ = kind;
+  sync_cmd_ = cmd;
+  sync_until_ = robot_.now() + rclcpp::Duration::from_seconds(sync_pause_s_);
+
+  const Command colour_of = (kind == SyncKind::Speed) ? cmd : Command::Handover;
+  const auto rgb = card_rgb(card_name(colour_of));
+  sync_r_ = rgb.r * kEyeBrightness;
+  sync_g_ = rgb.g * kEyeBrightness;
+  sync_b_ = rgb.b * kEyeBrightness;
+  // The countdown owns the eyes while it runs, so drop any card flash still pending.
+  flash_until_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+
+  // Park the wheels once: convoy_hold_ keeps the line follower and the watchdog off
+  // them until finish_sync(), so there is no need to re-stop on every tick.
+  robot_.set_convoy_hold(true);
+  robot_.stop();
+  last_v_ = 0.0;
+}
+
+void ConvoyController::finish_sync()
+{
+  const SyncKind kind = sync_kind_;
+  sync_kind_ = SyncKind::None;
+
+  switch (kind) {
+    case SyncKind::TakeLead:
+      become_leader(sync_cmd_);
+      publish_command(drive_command());
+      RCLCPP_INFO(robot_.get_logger(), "Handover done: this robot leads (term %u)", term_);
+      break;
+    case SyncKind::GiveLead:
+      become_follower();
+      RCLCPP_INFO(robot_.get_logger(), "Handover done: this robot follows");
+      break;
+    case SyncKind::Speed:
+    case SyncKind::None:
+      apply_drive(sync_cmd_);
+      break;
   }
-  v = std::max(0.0, v);
-  last_v_ = v;
-  robot_.set_follow_speed(v);
+}
+
+void ConvoyController::apply_sync_leds()
+{
+  const double left = (sync_until_ - robot_.now()).seconds();
+  // Blink the card colour down to the last stretch, then hold it solid: the stand can
+  // see both robots waiting on each other and then leaving together.
+  const bool on = (left <= kSyncGoSeconds) ||
+    (static_cast<int>(left / kSyncBlinkSeconds) % 2 == 0);
+  robot_.set_eyes(on ? sync_r_ : 0.0, on ? sync_g_ : 0.0, on ? sync_b_ : 0.0);
 }
 
 void ConvoyController::apply_leds()
 {
-  const bool leader_side =
-    role_ == Role::Leader || role_ == Role::LeaderSiding || role_ == Role::Waiting;
-  robot_.set_blinker_left(leader_side ? 1.0 : 0.0);
-  robot_.set_blinker_right(leader_side ? 0.0 : 1.0);
-
-  double r = 0.0;
-  double g = 0.0;
-  double b = 0.0;
-  switch (cmd_) {
-    case Command::Stop:
-      r = 1.0;
-      break;
-    case Command::Cruise:
-      r = 1.0;
-      g = 0.8;
-      break;
-    case Command::Turbo:
-      g = 1.0;
-      break;
-    case Command::Handover:
-      b = 1.0;
-      break;
+  const auto stamp = robot_.now();
+  if (flash_until_.nanoseconds() != 0 && stamp < flash_until_) {
+    robot_.set_eyes(flash_r_, flash_g_, flash_b_);
+    return;
   }
-  robot_.set_eyes(r, g, b);
+
+  if (!running_) {
+    const double v =
+      (static_cast<int>(stamp.nanoseconds() / 400000000) % 2 == 0) ? kEyeBrightness : 0.0;
+    robot_.set_eyes(v, v, v);
+    return;
+  }
+  if (role_ == Role::Follower) {
+    robot_.set_eyes(0.0, 0.0, 0.0);
+    return;
+  }
+  if (!peer_.valid) {
+    const double v = peer_lost_ && (static_cast<int>(stamp.nanoseconds() / 250000000) % 2 == 0)
+                       ? kEyeBrightness
+                       : (peer_lost_ ? 0.0 : kEyeBrightness);
+    robot_.set_eye_left(v, v, v);
+    robot_.set_eye_right(0.0, 0.0, 0.0);
+    return;
+  }
+  robot_.set_eyes(kEyeBrightness, kEyeBrightness, kEyeBrightness);
 }
 
 void ConvoyController::become_leader(Command cmd)
 {
+  term_ = std::max(term_, peer_.term) + 1;
   role_ = Role::Leader;
-  cmd_ = (cmd == Command::Handover) ? Command::Cruise : cmd;
-  robot_.set_steer_bias(0.0);
-  robot_.set_convoy_hold(cmd_ == Command::Stop);
-  reset_path_offset();
+  apply_drive(cmd == Command::Handover ? Command::Cruise : cmd);
 }
 
 void ConvoyController::become_follower()
 {
   role_ = Role::Follower;
-  robot_.set_steer_bias(0.0);
-  reset_path_offset();
-  rejoin_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  last_leader_seen_ = robot_.now();
 }
 
 void ConvoyController::start_handover()
 {
-  cmd_ = Command::Handover;
-  role_ = Role::LeaderSiding;
-  phase_since_ = robot_.now();
-  robot_.set_steer_bias(handover_bias_rad_);
-  robot_.set_convoy_hold(false);
-  publish_command();
-  RCLCPP_INFO(robot_.get_logger(), "Handover: taking the siding");
-}
-
-void ConvoyController::reset_path_offset()
-{
-  s_offset_ = robot_.path_length_m();
+  publish_command(Command::Handover);
+  begin_sync(SyncKind::GiveLead, drive_command());
+  RCLCPP_INFO(
+    robot_.get_logger(), "Handover to '%s': both robots pause, then swap roles",
+    peer_.id.c_str());
 }
 
 void ConvoyController::resolve_roles()
 {
-  if (!peer_.valid || !peer_is_leader()) {
+  if (!peer_.valid || peer_.role != Role::Leader || role_ != Role::Leader) {
     return;
   }
-  const bool self_lead =
-    role_ == Role::Leader || role_ == Role::LeaderSiding;
-  if (self_lead && robot_id_ > peer_.id) {
-    RCLCPP_WARN(
-      robot_.get_logger(), "Two leaders on the network; '%s' yields to '%s'", robot_id_.c_str(),
-      peer_.id.c_str());
-    become_follower();
-    last_leader_seen_ = robot_.now();
+  const bool lose = (term_ < peer_.term) || (term_ == peer_.term && robot_id_ > peer_.id);
+  if (!lose) {
+    return;
   }
+  RCLCPP_WARN(
+    robot_.get_logger(),
+    "Yielding lead to '%s' (term %u vs %u)", peer_.id.c_str(), peer_.term, term_);
+  become_follower();
+  flash_rgb(1.0, 1.0, 1.0);
 }
 
-bool ConvoyController::peer_is_leader() const
+void ConvoyController::flash_rgb(double red, double green, double blue)
 {
-  return peer_.role == Role::Leader || peer_.role == Role::LeaderSiding ||
-         peer_.role == Role::Passing;
+  flash_r_ = red * kEyeBrightness;
+  flash_g_ = green * kEyeBrightness;
+  flash_b_ = blue * kEyeBrightness;
+  flash_until_ = robot_.now() + rclcpp::Duration::from_seconds(kFlashSeconds);
+}
+
+void ConvoyController::flash_card(const std::string & card)
+{
+  const auto rgb = card_rgb(card);
+  flash_rgb(rgb.r, rgb.g, rgb.b);
+}
+
+void ConvoyController::flash_reject()
+{
+  flash_rgb(1.0, 0.0, 0.0);
+}
+
+bool ConvoyController::accept_card(const ColorReading & reading, std::string & card)
+{
+  if (!is_card(reading, card)) {
+    debounce_name_.clear();
+    debounce_count_ = 0;
+    return false;
+  }
+  if (card == debounce_name_) {
+    ++debounce_count_;
+  } else {
+    debounce_name_ = card;
+    debounce_count_ = 1;
+  }
+  if (debounce_count_ < color_debounce_) {
+    return false;
+  }
+  const auto stamp = robot_.now();
+  if (card == last_card_ && last_card_time_.nanoseconds() != 0 &&
+      (stamp - last_card_time_).seconds() < color_cooldown_s_) {
+    return false;
+  }
+  last_card_ = card;
+  last_card_time_ = stamp;
+  return true;
 }
 
 bool ConvoyController::is_card(const ColorReading & reading, std::string & card) const
@@ -473,15 +612,15 @@ double ConvoyController::command_speed(Command cmd) const
   return cruise_speed_;
 }
 
-double ConvoyController::reported_path() const
+ConvoyController::Command ConvoyController::drive_command() const
 {
-  return robot_.path_length_m() - s_offset_;
+  return last_drive_cmd_;
 }
 
-void ConvoyController::publish_command()
+void ConvoyController::publish_command(Command cmd)
 {
   std_msgs::msg::String msg;
-  msg.data = command_name(cmd_);
+  msg.data = command_name(cmd);
   command_pub_->publish(msg);
 }
 
@@ -490,8 +629,8 @@ void ConvoyController::publish_peer()
   std::ostringstream out;
   out.setf(std::ios::fixed);
   out.precision(3);
-  out << robot_id_ << ',' << role_name(role_) << ',' << command_name(cmd_) << ','
-      << reported_path() << ',' << last_v_ << ',' << seq_;
+  out << robot_id_ << ',' << role_name(role_) << ',' << command_name(last_drive_cmd_) << ','
+      << last_v_ << ',' << seq_ << ',' << term_;
   ++seq_;
   std_msgs::msg::String msg;
   msg.data = out.str();
@@ -500,19 +639,7 @@ void ConvoyController::publish_peer()
 
 const char * ConvoyController::role_name(Role role)
 {
-  switch (role) {
-    case Role::Leader:
-      return "leader";
-    case Role::Follower:
-      return "follower";
-    case Role::LeaderSiding:
-      return "leader_siding";
-    case Role::Waiting:
-      return "waiting";
-    case Role::Passing:
-      return "passing";
-  }
-  return "follower";
+  return (role == Role::Leader) ? "leader" : "follower";
 }
 
 const char * ConvoyController::command_name(Command cmd)
@@ -530,22 +657,32 @@ const char * ConvoyController::command_name(Command cmd)
   return "CRUISE";
 }
 
+const char * ConvoyController::card_name(Command cmd)
+{
+  switch (cmd) {
+    case Command::Stop:
+      return "red";
+    case Command::Cruise:
+      return "green";
+    case Command::Turbo:
+      return "yellow";
+    case Command::Handover:
+      return "blue";
+  }
+  return "green";
+}
+
 bool ConvoyController::parse_role(const std::string & text, Role & role)
 {
-  if (text == "leader") {
+  if (text == "leader" || text == "leader_siding" || text == "passing") {
     role = Role::Leader;
-  } else if (text == "follower") {
-    role = Role::Follower;
-  } else if (text == "leader_siding") {
-    role = Role::LeaderSiding;
-  } else if (text == "waiting") {
-    role = Role::Waiting;
-  } else if (text == "passing") {
-    role = Role::Passing;
-  } else {
-    return false;
+    return true;
   }
-  return true;
+  if (text == "follower" || text == "waiting") {
+    role = Role::Follower;
+    return true;
+  }
+  return false;
 }
 
 bool ConvoyController::parse_command(const std::string & text, Command & cmd)
