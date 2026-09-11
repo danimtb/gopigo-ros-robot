@@ -105,7 +105,7 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args -r /turtle1/cmd_vel:=
 | `line_follow_kp` | `8.0` |
 | `line_follow_kd` | `0.08` |
 | `line_follow_slowdown` | `0.35` of the speed dropped in a full turn |
-| `line_threshold` | `0.6` (below it a sensor is on the line) |
+| `line_threshold` | `0.10` (below it a sensor is on the line) |
 | `line_search_timeout` | `1.5` s turning to find a lost line, then stop |
 | `color_sensor_port` | `I2C` (`AD1`, `AD2`, or `off`) |
 | `color_sensor_topic` | `color` |
@@ -114,8 +114,8 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args -r /turtle1/cmd_vel:=
 | `robot_id` | `a` (startup only; use `b` on the second robot) |
 | `convoy_enable` | `false` |
 | `convoy_role` | `follower` (auto-elects if no leader; `ros2 param set` still works) |
-| `cruise_speed` | `0.06` m/s (green card; slow so the stand is readable) |
-| `turbo_speed` | `0.09` m/s (yellow card) |
+| `cruise_speed` | `0.10` m/s (green card) |
+| `turbo_speed` | `0.15` m/s (yellow card) |
 | `sync_pause` | `1.2` s stopped on both robots before a speed or role change (`0.0` disables) |
 | `leader_timeout` | `3.0` s without a leader heartbeat → this robot leads |
 | `color_min_saturation` | `0.25` (ignore floor / grey) |

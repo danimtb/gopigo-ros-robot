@@ -55,7 +55,7 @@ GoPiGo3RosNode::GoPiGo3RosNode()
   line_follow_kp_ = declare_parameter<double>("line_follow_kp", 8.0);
   line_follow_kd_ = declare_parameter<double>("line_follow_kd", 0.08);
   line_follow_slowdown_ = declare_parameter<double>("line_follow_slowdown", 0.35);
-  line_threshold_ = declare_parameter<double>("line_threshold", 0.6);
+  line_threshold_ = declare_parameter<double>("line_threshold", 0.10);
   line_search_timeout_ =
     rclcpp::Duration::from_seconds(declare_parameter<double>("line_search_timeout", 1.5));
 
