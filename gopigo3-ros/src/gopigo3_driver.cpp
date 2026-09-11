@@ -20,7 +20,7 @@ constexpr uint8_t kLineFollowerAddress = 0x06;
 // danimtb/robotapp's line_sensor.cpp waits on this same board.
 constexpr unsigned kLineFollowerSettleUs = 10000;
 // Only used while probing, where the position estimate is thrown away.
-constexpr double kDefaultWhiteThreshold = 0.6;
+constexpr double kDefaultWhiteThreshold = 0.10;
 constexpr uint8_t kTcsAddress = 0x29;
 constexpr uint8_t kTcsCommand = 0x80;
 constexpr uint8_t kTcsEnable = 0x00;
