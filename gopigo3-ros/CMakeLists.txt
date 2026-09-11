@@ -9,7 +9,12 @@ find_package(gopigo3_cpp REQUIRED)
 add_executable(gopigo3_ros_node
                src/main.cpp
                src/gopigo3_ros_node.cpp
-               src/gopigo3_driver.cpp)
+               src/gopigo3_driver.cpp
+               src/convoy_controller.cpp)
+
+set_target_properties(gopigo3_ros_node PROPERTIES
+                      CXX_STANDARD 17
+                      CXX_STANDARD_REQUIRED ON)
 
 target_link_libraries(gopigo3_ros_node PRIVATE rclcpp::rclcpp
                                                ${geometry_msgs_TARGETS}

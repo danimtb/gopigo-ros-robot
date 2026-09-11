@@ -1,5 +1,6 @@
 #include <memory>
 #include <stdexcept>
+#include <string>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -13,11 +14,16 @@ int main(int argc, char ** argv)
   try {
     node = std::make_shared<GoPiGo3RosNode>();
   } catch (const std::runtime_error & e) {
-    RCLCPP_FATAL(
-      rclcpp::get_logger("gopigo3_ros"),
-      "Cannot talk to the GoPiGo3 board (%s). Check that SPI is enabled "
-      "(raspi-config), that the robot is powered on, and that you can read "
-      "/dev/spidev0.1.", e.what());
+    const std::string what = e.what();
+    if (what.find("parameter") != std::string::npos) {
+      RCLCPP_FATAL(rclcpp::get_logger("gopigo3_ros"), "%s", e.what());
+    } else {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("gopigo3_ros"),
+        "Cannot talk to the GoPiGo3 board (%s). Check that SPI is enabled "
+        "(raspi-config), that the robot is powered on, and that you can read "
+        "/dev/spidev0.1.", e.what());
+    }
     rclcpp::shutdown();
     return 1;
   }

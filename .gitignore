@@ -5,6 +5,8 @@ ros-conan/
 docker/extra-ca.crt
 
 
+conan*.sh
+deactivate_conan*.sh
 CMakeUserPresets.json
 **/build/
 **/deploy/

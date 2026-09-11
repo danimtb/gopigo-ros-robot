@@ -463,23 +463,56 @@ void GoPiGo3Driver::guess_color(ColorReading & reading) const
       name = known.name;
     }
   }
+  reading.saturation = s;
+  reading.value = v;
   reading.name = name;
 }
 
 void GoPiGo3Driver::set_eye_left(double red, double green, double blue)
 {
-  gpg_->set_led(LED_EYE_LEFT, to_pwm(red), to_pwm(green), to_pwm(blue));
+  const uint8_t r = to_pwm(red);
+  const uint8_t g = to_pwm(green);
+  const uint8_t b = to_pwm(blue);
+  if (eye_left_valid_ && eye_left_r_ == r && eye_left_g_ == g && eye_left_b_ == b) {
+    return;
+  }
+  gpg_->set_led(LED_EYE_LEFT, r, g, b);
+  eye_left_valid_ = true;
+  eye_left_r_ = r;
+  eye_left_g_ = g;
+  eye_left_b_ = b;
 }
 
 void GoPiGo3Driver::set_eye_right(double red, double green, double blue)
 {
-  gpg_->set_led(LED_EYE_RIGHT, to_pwm(red), to_pwm(green), to_pwm(blue));
+  const uint8_t r = to_pwm(red);
+  const uint8_t g = to_pwm(green);
+  const uint8_t b = to_pwm(blue);
+  if (eye_right_valid_ && eye_right_r_ == r && eye_right_g_ == g && eye_right_b_ == b) {
+    return;
+  }
+  gpg_->set_led(LED_EYE_RIGHT, r, g, b);
+  eye_right_valid_ = true;
+  eye_right_r_ = r;
+  eye_right_g_ = g;
+  eye_right_b_ = b;
 }
 
 void GoPiGo3Driver::set_eyes(double red, double green, double blue)
 {
-  gpg_->set_led(
-    LED_EYE_LEFT | LED_EYE_RIGHT, to_pwm(red), to_pwm(green), to_pwm(blue));
+  const uint8_t r = to_pwm(red);
+  const uint8_t g = to_pwm(green);
+  const uint8_t b = to_pwm(blue);
+  if (eye_left_valid_ && eye_right_valid_ && eye_left_r_ == r && eye_left_g_ == g &&
+      eye_left_b_ == b && eye_right_r_ == r && eye_right_g_ == g && eye_right_b_ == b) {
+    return;
+  }
+  gpg_->set_led(LED_EYE_LEFT | LED_EYE_RIGHT, r, g, b);
+  eye_left_valid_ = true;
+  eye_right_valid_ = true;
+  eye_left_r_ = eye_right_r_ = r;
+  eye_left_g_ = eye_right_g_ = g;
+  eye_left_b_ = eye_right_b_ = b;
 }
 
 void GoPiGo3Driver::set_blinker_left(double brightness)
@@ -507,6 +540,30 @@ void GoPiGo3Driver::stop()
 {
   gpg_->set_motor_dps(MOTOR_LEFT, 0);
   gpg_->set_motor_dps(MOTOR_RIGHT, 0);
+}
+
+bool GoPiGo3Driver::read_encoders(int32_t & left, int32_t & right)
+{
+  if (!gpg_) {
+    return false;
+  }
+  left = gpg_->get_motor_encoder(MOTOR_LEFT);
+  right = gpg_->get_motor_encoder(MOTOR_RIGHT);
+  return true;
+}
+
+double GoPiGo3Driver::path_length_m()
+{
+  int32_t left = 0;
+  int32_t right = 0;
+  if (!read_encoders(left, right)) {
+    return 0.0;
+  }
+  const double radius = wheel_radius();
+  constexpr double kPi = 3.14159265358979323846;
+  const double left_m = static_cast<double>(left) * kPi / 180.0 * radius;
+  const double right_m = static_cast<double>(right) * kPi / 180.0 * radius;
+  return 0.5 * (left_m + right_m);
 }
 
 double GoPiGo3Driver::wheel_radius() const
