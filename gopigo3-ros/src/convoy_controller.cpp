@@ -87,6 +87,8 @@ void ConvoyController::declare_parameters()
   robot_.declare_parameter<double>("turbo_speed", turbo_speed_);
   robot_.declare_parameter<double>("sync_pause", sync_pause_s_);
   robot_.declare_parameter<double>("leader_timeout", leader_timeout_s_);
+  robot_.declare_parameter<bool>("handover_turn", handover_turn_);
+  robot_.declare_parameter<double>("turn_speed", turn_speed_);
   robot_.declare_parameter<double>("color_min_saturation", color_min_saturation_);
   robot_.declare_parameter<double>("color_min_clear", color_min_clear_);
   robot_.declare_parameter<int>("color_debounce", color_debounce_);
@@ -106,6 +108,8 @@ void ConvoyController::load_parameters()
   turbo_speed_ = robot_.get_parameter("turbo_speed").as_double();
   sync_pause_s_ = robot_.get_parameter("sync_pause").as_double();
   leader_timeout_s_ = robot_.get_parameter("leader_timeout").as_double();
+  handover_turn_ = robot_.get_parameter("handover_turn").as_bool();
+  turn_speed_ = robot_.get_parameter("turn_speed").as_double();
   color_min_saturation_ = robot_.get_parameter("color_min_saturation").as_double();
   color_min_clear_ = robot_.get_parameter("color_min_clear").as_double();
   color_debounce_ = robot_.get_parameter("color_debounce").as_int();
@@ -142,6 +146,10 @@ rcl_interfaces::msg::SetParametersResult ConvoyController::apply_parameter(
     enabled_ = param.as_bool();
     return result;
   }
+  if (name == "handover_turn") {
+    handover_turn_ = param.as_bool();
+    return result;
+  }
   if (name == "color_debounce") {
     if (param.as_int() < 1) {
       result.successful = false;
@@ -166,6 +174,8 @@ rcl_interfaces::msg::SetParametersResult ConvoyController::apply_parameter(
     sync_pause_s_ = value;
   } else if (name == "leader_timeout") {
     leader_timeout_s_ = value;
+  } else if (name == "turn_speed") {
+    turn_speed_ = value;
   } else if (name == "color_min_saturation") {
     color_min_saturation_ = value;
   } else if (name == "color_min_clear") {
@@ -181,9 +191,15 @@ void ConvoyController::on_color(const ColorReading & reading)
   if (!enabled_ || !running_) {
     return;
   }
-  // The eyes are already counting a pause down, and the wheels are parked: taking a
-  // second card here would restart the sequence the follower is waiting on.
-  if (sync_kind_ != SyncKind::None) {
+  // The eyes are already counting a pause down, or the robot is halfway through the
+  // handover spin: taking a second card here would restart the sequence the other robot
+  // is waiting on. Keep the cooldown running on the card that started the sequence, since
+  // it is usually still in front of the sensor when the robot comes out of the spin, where
+  // reading it again only gets it rejected in red by a robot that is now a follower.
+  if (sync_kind_ != SyncKind::None || robot_.turning()) {
+    last_card_time_ = robot_.now();
+    debounce_name_.clear();
+    debounce_count_ = 0;
     return;
   }
 
@@ -242,7 +258,7 @@ void ConvoyController::tick()
     last_leader_seen_ = stamp;
   }
 
-  if (sync_kind_ == SyncKind::None) {
+  if (sync_kind_ == SyncKind::None && !robot_.turning()) {
     // Mid-handover both robots claim the lead for a tick, which resolve_roles would
     // read as a clash and undo the swap.
     maybe_elect();
@@ -269,6 +285,14 @@ void ConvoyController::tick()
       return;
     }
     finish_sync();
+  }
+
+  if (robot_.turning()) {
+    // The node steps the spin off the encoders on its own timer. Hold the handover colour
+    // solid on the eyes and leave the wheels to it until it is done.
+    robot_.set_eyes(sync_r_, sync_g_, sync_b_);
+    publish_peer();
+    return;
   }
 
   apply_motion();
@@ -303,22 +327,26 @@ void ConvoyController::on_command(const std_msgs::msg::String & msg)
   if (!parse_command(msg.data, cmd)) {
     return;
   }
+  // A new leader re-announces the order already in effect when it takes the lead, which
+  // needs no pause. With the convoy stopped that order is STOP, and taking it as a fresh
+  // one used to brake this robot out of the handover spin it had just started and leave it
+  // flashing red where it should have been turning around.
+  if (cmd != Command::Handover && cmd == drive_command()) {
+    return;
+  }
   if (cmd == Command::Stop) {
-    // Brake now and drop any pause in progress, rather than finishing the countdown.
+    // Brake now and drop any pause or spin in progress, rather than finishing it.
     sync_kind_ = SyncKind::None;
+    robot_.cancel_turn();
     flash_card(card_name(cmd));
     apply_drive(cmd);
     return;
   }
-  if (sync_kind_ != SyncKind::None) {
+  if (sync_kind_ != SyncKind::None || robot_.turning()) {
     return;
   }
   if (cmd == Command::Handover) {
     begin_sync(SyncKind::TakeLead, drive_command());
-    return;
-  }
-  if (cmd == drive_command()) {
-    // A new leader re-announces the speed already in effect, which needs no pause.
     return;
   }
   begin_sync(SyncKind::Speed, cmd);
@@ -382,6 +410,7 @@ void ConvoyController::set_running(bool running)
   running_ = running;
   if (!running_) {
     robot_.set_convoy_hold(true);
+    robot_.cancel_turn();
     robot_.stop();
     last_v_ = 0.0;
     sync_kind_ = SyncKind::None;
@@ -454,16 +483,32 @@ void ConvoyController::finish_sync()
       become_leader(sync_cmd_);
       publish_command(drive_command());
       RCLCPP_INFO(robot_.get_logger(), "Handover done: this robot leads (term %u)", term_);
+      begin_turnaround();
       break;
     case SyncKind::GiveLead:
       become_follower();
       RCLCPP_INFO(robot_.get_logger(), "Handover done: this robot follows");
+      begin_turnaround();
       break;
     case SyncKind::Speed:
     case SyncKind::None:
       apply_drive(sync_cmd_);
       break;
   }
+}
+
+void ConvoyController::begin_turnaround()
+{
+  if (!handover_turn_) {
+    return;
+  }
+  // The board that reads the line is at the front, so no robot can follow the line
+  // backwards. Both spin half a turn in place instead and keep driving forwards: the
+  // convoy runs the other way down the line, which leaves the robot that has just taken
+  // the lead at the head of it rather than trailing the one that gave it away.
+  robot_.set_convoy_hold(true);
+  robot_.start_turn(M_PI, turn_speed_);
+  RCLCPP_INFO(robot_.get_logger(), "Turning around: the convoy now runs the other way");
 }
 
 void ConvoyController::apply_sync_leds()
