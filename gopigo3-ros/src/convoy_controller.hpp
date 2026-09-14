@@ -74,6 +74,7 @@ private:
   void apply_leds();
   void begin_sync(SyncKind kind, Command cmd);
   void finish_sync();
+  void begin_turnaround();
   void apply_sync_leds();
   void become_leader(Command cmd);
   void become_follower();
@@ -106,10 +107,12 @@ private:
   Peer peer_;
   std::uint32_t term_{0};
 
-  double cruise_speed_{0.06};
-  double turbo_speed_{0.09};
+  double cruise_speed_{0.10};
+  double turbo_speed_{0.15};
   double sync_pause_s_{1.2};
   double leader_timeout_s_{3.0};
+  bool handover_turn_{true};
+  double turn_speed_{1.5};
   double color_min_saturation_{0.25};
   double color_min_clear_{0.05};
   int color_debounce_{2};

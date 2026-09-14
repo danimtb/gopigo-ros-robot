@@ -28,6 +28,9 @@ public:
   double follow_speed() const { return line_follow_speed_; }
   void set_steer_bias(double bias_rad);
   void set_convoy_hold(bool hold);
+  void start_turn(double radians, double speed);
+  bool turning() const { return turn_active_; }
+  void cancel_turn();
   void stop();
   bool teleop_recent() const;
   void set_eyes(double red, double green, double blue);
@@ -41,6 +44,9 @@ private:
   void publish_line_follower();
   void publish_color();
   void follow_line(const LineFollowerReading & reading);
+  void step_turn();
+  void finish_turn();
+  void check_turn_line(const LineFollowerReading & reading);
   GroveI2cPort parse_grove_i2c_port(const std::string & name, const char * param) const;
   std::string relative_topic(std::string name, const char * param) const;
   void on_eye_left(const std_msgs::msg::ColorRGBA & msg);
@@ -88,6 +94,19 @@ private:
   bool color_ready_{false};
   bool convoy_hold_{false};
   double steer_bias_{0.0};
+
+  bool turn_active_{false};
+  bool turn_encoders_{false};
+  bool turn_off_line_{false};
+  double turn_dir_{1.0};
+  double turn_speed_{0.0};
+  double turn_target_deg_{0.0};  // wheel shaft degrees that make up the whole spin
+  double turn_done_{0.0};        // fraction of the spin already turned
+  int32_t turn_left_{0};
+  int32_t turn_right_{0};
+  double turn_seconds_{0.0};
+  rclcpp::Time turn_start_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time turn_deadline_{0, 0, RCL_ROS_TIME};
 
   double max_linear_speed_;
   double max_angular_speed_;

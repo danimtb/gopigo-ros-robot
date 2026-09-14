@@ -105,7 +105,7 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args -r /turtle1/cmd_vel:=
 | `line_follow_kp` | `8.0` |
 | `line_follow_kd` | `0.08` |
 | `line_follow_slowdown` | `0.35` of the speed dropped in a full turn |
-| `line_threshold` | `0.6` (below it a sensor is on the line) |
+| `line_threshold` | `0.10` (below it a sensor is on the line) |
 | `line_search_timeout` | `1.5` s turning to find a lost line, then stop |
 | `color_sensor_port` | `I2C` (`AD1`, `AD2`, or `off`) |
 | `color_sensor_topic` | `color` |
@@ -114,10 +114,12 @@ conan run "ros2 run turtlesim turtle_teleop_key --ros-args -r /turtle1/cmd_vel:=
 | `robot_id` | `a` (startup only; use `b` on the second robot) |
 | `convoy_enable` | `false` |
 | `convoy_role` | `follower` (auto-elects if no leader; `ros2 param set` still works) |
-| `cruise_speed` | `0.06` m/s (green card; slow so the stand is readable) |
-| `turbo_speed` | `0.09` m/s (yellow card) |
+| `cruise_speed` | `0.10` m/s (green card) |
+| `turbo_speed` | `0.15` m/s (yellow card) |
 | `sync_pause` | `1.2` s stopped on both robots before a speed or role change (`0.0` disables) |
 | `leader_timeout` | `3.0` s without a leader heartbeat → this robot leads |
+| `handover_turn` | `true` (both robots spin half a turn when they swap roles) |
+| `turn_speed` | `1.5` rad/s for that spin (~2 s for half a turn) |
 | `color_min_saturation` | `0.25` (ignore floor / grey) |
 | `color_min_clear` | `0.05` |
 | `color_debounce` | `2` matching colour reads |
@@ -219,6 +221,18 @@ you want before that. Nothing holds that gap: wheel slip drifts it, and there is
 ultrasonic. `v_mps` on `/convoy/peer` is the number to echo when checking that both robots
 agree on speed.
 
+A role swap reverses the convoy: once the pause is over, both robots spin half a turn in
+place and carry on driving the other way down the line, so the robot that just took the
+lead ends up at the head instead of trailing the one that gave it away. Leave enough gap
+for both of them to spin without touching. There is no driving backwards to be had here:
+the sensor board is at the front, and a line follower with the board behind the wheels
+runs away from the line instead of onto it. The spin is measured on the wheel encoders
+and finished off on the line itself, which crosses the point the robot spins about and so
+comes back square under the board half a turn later. `handover_turn:=false` keeps the old
+behaviour, where the roles swap but neither robot moves out of place. An election or a
+term clash does not turn anybody around: those happen when a robot is missing, not when
+two robots agree to hand over.
+
 Cards: red = stop, yellow = turbo, green = cruise, blue = swap roles (no overtake).
 Blue with no peer is ignored (red flash). If the follower disappears, the leader
 keeps going. If the leader is silent for 3 s, the other robot takes over with a
@@ -230,6 +244,7 @@ Eyes (low brightness) are the stand UI:
 | --- | --- |
 | Slow white blink | Waiting for `/convoy/run START` |
 | Fast blink then solid (yellow / green / blue) | Sync pause before a speed or role change; both leave on the solid |
+| Solid blue after that countdown | Spinning half a turn to reverse the convoy after a role swap |
 | Flash red (~3 s) | Red card (both stop), follower saw a card, or blue with no peer |
 | Flash yellow / green (~3 s) | Card read, but that speed was already in effect |
 | Both eyes on | Leader, peer present |

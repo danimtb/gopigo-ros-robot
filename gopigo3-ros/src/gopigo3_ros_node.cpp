@@ -28,8 +28,9 @@ bool is_convoy_param(const std::string & name)
 {
   return name == "robot_id" || name == "convoy_enable" || name == "convoy_role" ||
          name == "cruise_speed" || name == "turbo_speed" || name == "sync_pause" ||
-         name == "leader_timeout" || name == "color_min_saturation" ||
-         name == "color_min_clear" || name == "color_debounce" || name == "color_cooldown";
+         name == "leader_timeout" || name == "handover_turn" || name == "turn_speed" ||
+         name == "color_min_saturation" || name == "color_min_clear" ||
+         name == "color_debounce" || name == "color_cooldown";
 }
 }  // namespace
 
@@ -55,7 +56,7 @@ GoPiGo3RosNode::GoPiGo3RosNode()
   line_follow_kp_ = declare_parameter<double>("line_follow_kp", 8.0);
   line_follow_kd_ = declare_parameter<double>("line_follow_kd", 0.08);
   line_follow_slowdown_ = declare_parameter<double>("line_follow_slowdown", 0.35);
-  line_threshold_ = declare_parameter<double>("line_threshold", 0.6);
+  line_threshold_ = declare_parameter<double>("line_threshold", 0.10);
   line_search_timeout_ =
     rclcpp::Duration::from_seconds(declare_parameter<double>("line_search_timeout", 1.5));
 
@@ -210,6 +211,10 @@ void GoPiGo3RosNode::on_cmd_vel(const geometry_msgs::msg::Twist & msg)
 {
   last_cmd_time_ = now();
   last_teleop_time_ = last_cmd_time_;
+  // A key press takes the wheels off a handover spin, the same way it takes them off the
+  // line follower. Dropping the flag rather than cancelling keeps stop() from landing on
+  // top of the command that just came in.
+  turn_active_ = false;
   drive(msg);
 }
 
@@ -217,6 +222,10 @@ void GoPiGo3RosNode::on_timer()
 {
   if (convoy_) {
     convoy_->tick();
+  }
+  if (turn_active_) {
+    step_turn();
+    return;
   }
   if (!stopped_ && !convoy_hold_ && (now() - last_cmd_time_) > cmd_timeout_) {
     stop();
@@ -255,6 +264,11 @@ void GoPiGo3RosNode::publish_line_follower()
   std_msgs::msg::String state;
   state.data = reading.state;
   line_state_pub_->publish(state);
+
+  if (turn_active_) {
+    check_turn_line(reading);
+    return;
+  }
 
   if (line_follow_ && !convoy_hold_ && (now() - last_teleop_time_) > cmd_timeout_) {
     follow_line(reading);
@@ -337,6 +351,91 @@ void GoPiGo3RosNode::follow_line(const LineFollowerReading & reading)
 
   last_cmd_time_ = stamp;
   drive(cmd);
+}
+
+void GoPiGo3RosNode::start_turn(double radians, double speed)
+{
+  const double angle = std::abs(radians);
+  if (angle < 1e-3) {
+    return;
+  }
+  turn_dir_ = (radians < 0.0) ? -1.0 : 1.0;
+  turn_speed_ = std::max(speed, 0.05);
+  // Spinning on the spot, each wheel runs the arc of a circle half the wheel base wide,
+  // so the spin is over once that arc has gone by on the wheel shafts.
+  turn_target_deg_ =
+    angle * (driver_.wheel_separation() / 2.0) / driver_.wheel_radius() * 180.0 / M_PI;
+  turn_encoders_ = driver_.read_encoders(turn_left_, turn_right_);
+  turn_seconds_ = angle / turn_speed_;
+  turn_start_ = now();
+  // A wheel held by hand (or a board that stops answering) would otherwise leave the
+  // robot grinding in place for the rest of the demo.
+  turn_deadline_ = turn_start_ + rclcpp::Duration::from_seconds(turn_seconds_ * 2.0 + 1.0);
+  turn_off_line_ = false;
+  turn_done_ = 0.0;
+  turn_active_ = true;
+  if (!turn_encoders_) {
+    RCLCPP_WARN(get_logger(), "Encoders did not answer; timing the turn instead");
+  }
+  step_turn();
+}
+
+void GoPiGo3RosNode::step_turn()
+{
+  const auto stamp = now();
+  int32_t left = 0;
+  int32_t right = 0;
+  if (turn_encoders_ && driver_.read_encoders(left, right)) {
+    const double turned = (std::abs(static_cast<double>(left - turn_left_)) +
+                           std::abs(static_cast<double>(right - turn_right_))) / 2.0;
+    turn_done_ = turned / turn_target_deg_;
+  } else {
+    turn_done_ = (stamp - turn_start_).seconds() / turn_seconds_;
+  }
+
+  if (turn_done_ >= 1.0 || stamp >= turn_deadline_) {
+    finish_turn();
+    return;
+  }
+
+  geometry_msgs::msg::Twist cmd;
+  cmd.angular.z = turn_dir_ * turn_speed_;
+  last_cmd_time_ = stamp;
+  drive(cmd);
+}
+
+void GoPiGo3RosNode::check_turn_line(const LineFollowerReading & reading)
+{
+  // The line runs through the point the robot spins about, so the board leaves it and
+  // then crosses it again square on, half a turn later. Stopping there comes out
+  // straighter than stopping on a wheel count that slip has eaten into, so wait for the
+  // line to go out of view first and then end the spin on it.
+  if (reading.lost != 0) {
+    turn_off_line_ = true;
+    return;
+  }
+  if (turn_off_line_ && turn_done_ > 0.5 && std::abs(reading.position - 0.5) < 0.1) {
+    finish_turn();
+  }
+}
+
+void GoPiGo3RosNode::finish_turn()
+{
+  turn_active_ = false;
+  stop();
+  // The line comes back under the board pointing the other way: a derivative taken
+  // across the spin would be a step, and the search timer must not read the spin as a
+  // line that went missing.
+  last_line_error_ = 0.0;
+  last_line_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  line_lost_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+}
+
+void GoPiGo3RosNode::cancel_turn()
+{
+  if (turn_active_) {
+    finish_turn();
+  }
 }
 
 void GoPiGo3RosNode::drive(const geometry_msgs::msg::Twist & msg)
@@ -490,8 +589,8 @@ rcl_interfaces::msg::SetParametersResult GoPiGo3RosNode::on_set_parameters(
       }
     } else if (
       name == "cruise_speed" || name == "turbo_speed" || name == "sync_pause" ||
-      name == "leader_timeout" || name == "color_min_saturation" || name == "color_min_clear" ||
-      name == "color_cooldown") {
+      name == "leader_timeout" || name == "turn_speed" || name == "color_min_saturation" ||
+      name == "color_min_clear" || name == "color_cooldown") {
       if (param.as_double() < 0.0) {
         result.successful = false;
         result.reason = name + " cannot be negative";
@@ -526,6 +625,7 @@ rcl_interfaces::msg::SetParametersResult GoPiGo3RosNode::on_set_parameters(
       last_line_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
       line_lost_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
       if (!line_follow_) {
+        cancel_turn();
         stop();  // hand the wheels back to teleop standing still, not on the last command
       }
       RCLCPP_INFO(
